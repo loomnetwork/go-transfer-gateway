@@ -22,7 +22,7 @@ import (
 	lcrypto "github.com/loomnetwork/go-loom/crypto"
 	ltypes "github.com/loomnetwork/go-loom/types"
 	"github.com/loomnetwork/loomchain"
-	gwcontract "github.com/loomnetwork/loomchain/builtin/plugins/gateway"
+	gwcontract "github.com/loomnetwork/transfer-gateway/builtin/plugins/gateway"
 	"github.com/loomnetwork/transfer-gateway/gateway/ethcontract"
 	"github.com/pkg/errors"
 )
