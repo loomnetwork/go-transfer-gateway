@@ -19,11 +19,11 @@ import (
 	loom "github.com/loomnetwork/go-loom"
 	"github.com/loomnetwork/go-loom/auth"
 	"github.com/loomnetwork/go-loom/client"
+	gwbindings "github.com/loomnetwork/go-loom/client/gateway"
 	lcrypto "github.com/loomnetwork/go-loom/crypto"
 	ltypes "github.com/loomnetwork/go-loom/types"
 	"github.com/loomnetwork/loomchain"
 	gwcontract "github.com/loomnetwork/transfer-gateway/builtin/plugins/gateway"
-	"github.com/loomnetwork/transfer-gateway/gateway/ethcontract"
 	"github.com/pkg/errors"
 )
 
@@ -116,7 +116,7 @@ type Status struct {
 type Oracle struct {
 	cfg        TransferGatewayConfig
 	chainID    string
-	solGateway *ethcontract.MainnetGatewayContract
+	solGateway *gwbindings.MainnetGatewayContract
 	goGateway  *DAppChainGateway
 	startBlock uint64
 	logger     *loom.Logger
@@ -284,7 +284,7 @@ func (orc *Oracle) connect() error {
 		}
 
 		if orc.solGateway == nil {
-			orc.solGateway, err = ethcontract.NewMainnetGatewayContract(
+			orc.solGateway, err = gwbindings.NewMainnetGatewayContract(
 				common.HexToAddress(orc.cfg.MainnetContractHexAddress),
 				orc.ethClient,
 			)
