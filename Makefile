@@ -108,6 +108,9 @@ deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR)
 	# fetch vendored packages
 	dep ensure -vendor-only
 
+vendor-deps:
+	dep ensure -vendor-only
+
 test:
 	go test -failfast -timeout $(E2E_TESTS_TIMEOUT) -v $(GOFLAGS) $(PKG)/...
 
