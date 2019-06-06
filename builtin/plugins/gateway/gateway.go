@@ -93,7 +93,7 @@ type (
 
 	ExtendedState = tgtypes.TransferGatewayExtendedState
 
-	TransferGatewayTxHash = tgtypes.TransferGatewayTxHash
+	HotWalletTxHash = tgtypes.TransferGatewayHotWalletTxHash
 )
 
 var (
@@ -109,13 +109,17 @@ var (
 	seenTxHashKeyPrefix                     = []byte("stx")
 
 	DepositTxHashKeyPrefix = []byte("dth")
-	extendedStateKey       = []byte("ext-state")
+	// TODO: Needs a better name, maybe HotWalletStateKey = []byte("hws")
+	extendedStateKey = []byte("ext-state")
 
 	// Permissions
-	changeOraclesPerm        = []byte("change-oracles")
-	submitEventsPerm         = []byte("submit-events")
-	signWithdrawalsPerm      = []byte("sign-withdrawals")
-	verifyCreatorsPerm       = []byte("verify-creators")
+	changeOraclesPerm   = []byte("change-oracles")
+	submitEventsPerm    = []byte("submit-events")
+	signWithdrawalsPerm = []byte("sign-withdrawals")
+	verifyCreatorsPerm  = []byte("verify-creators")
+	// TODO: This need some more thought, only new Oracles added after the hot wallet feature is
+	//       activated will be given this permission, so existing Oracles will not be able to verify
+	//       hot wallet deposits as expected.
 	clearInvalidTxHashesPerm = []byte("clear-invalid-txhashes")
 
 	validatorAuthConfigKey = []byte("validator-authcfg")
@@ -224,9 +228,9 @@ var (
 	ErrFailedToReclaimToken      = errors.New("TG013: failed to reclaim token")
 	ErrNotEnoughSignatures       = errors.New("TG014: failed to recover enough signatures from trusted validators")
 
-	ErrUnprocessedTxHashAlreadyExists    = errors.New("TG015: unprocessed tx hash already exists")
-	ErrNoUnprocessedTxHashExists         = errors.New("TG016: no unprocessed tx hash exists")
-	ErrTGHotWalletClearTxFeatureDisabled = errors.New("TG017: TG hot wallet clear txhash feature is disabled")
+	ErrUnprocessedTxHashAlreadyExists = errors.New("TG015: unprocessed tx hash already exists")
+	ErrNoUnprocessedTxHashExists      = errors.New("TG016: no unprocessed tx hash exists")
+	ErrHotWalletFeatureDisabled       = errors.New("TG017: hot wallet feature is disabled")
 )
 
 type GatewayType int
@@ -277,7 +281,7 @@ func (gw *Gateway) Init(ctx contract.Context, req *InitRequest) error {
 	}
 
 	return saveState(ctx, &GatewayState{
-		Owner:                 req.Owner,
+		Owner: req.Owner,
 		NextContractMappingID: 1,
 		LastMainnetBlockNum:   req.FirstMainnetBlockNum,
 	})
@@ -426,7 +430,9 @@ func removeOracle(ctx contract.Context, oracleAddr loom.Address) error {
 	ctx.RevokePermissionFrom(oracleAddr, submitEventsPerm, oracleRole)
 	ctx.RevokePermissionFrom(oracleAddr, signWithdrawalsPerm, oracleRole)
 	ctx.RevokePermissionFrom(oracleAddr, verifyCreatorsPerm, oracleRole)
-	ctx.RevokePermissionFrom(oracleAddr, clearInvalidTxHashesPerm, oracleRole)
+	if ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+		ctx.RevokePermissionFrom(oracleAddr, clearInvalidTxHashesPerm, oracleRole)
+	}
 
 	ctx.Delete(oracleStateKey(oracleAddr))
 	return nil
@@ -449,8 +455,8 @@ func (gw *Gateway) GetOracles(ctx contract.StaticContext, req *GetOraclesRequest
 // ProcessDepositEventByTxHash tries to submit deposit events by tx hash
 // This method expects that TGCheckTxHashFeature is enabled on chain
 func (gw *Gateway) ProcessDepositEventByTxHash(ctx contract.Context, req *ProcessEventBatchRequest) error {
-	if !ctx.FeatureEnabled(loomchain.TGHotWalletClearTxHashFeature, false) {
-		return ErrTGHotWalletClearTxFeatureDisabled
+	if !ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+		return ErrHotWalletFeatureDisabled
 	}
 
 	if ok, _ := ctx.HasPermission(submitEventsPerm, []string{oracleRole}); !ok {
@@ -577,8 +583,6 @@ func (gw *Gateway) ProcessEventBatch(ctx contract.Context, req *ProcessEventBatc
 }
 
 func (gw *Gateway) handleDeposit(ctx contract.Context, ev *MainnetEvent, checkTxHash bool) error {
-	var err error
-
 	// This should be already checked in Process* function, so it is okay,
 	// if we dont check this again.
 	payload := ev.Payload.(*tgtypes.TransferGatewayMainnetEvent_Deposit)
@@ -614,15 +618,16 @@ func (gw *Gateway) handleDeposit(ctx contract.Context, ev *MainnetEvent, checkTx
 		tokenAddr = loom.UnmarshalAddressPB(payload.Deposit.TokenContract)
 	}
 
-	if ctx.FeatureEnabled(loomchain.TGHotWalletClearTxHashFeature, false) {
-		if err := clearDepositTxHashIfExists(ctx, loom.UnmarshalAddressPB(payload.Deposit.TokenOwner)); err != nil {
+	if ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+		if err := clearDepositTxHashIfExists(ctx, ownerAddr); err != nil {
 			return err
 		}
 	}
 
-	err = transferTokenDeposit(
+	err := transferTokenDeposit(
 		ctx, ownerAddr, tokenAddr,
-		payload.Deposit.TokenKind, payload.Deposit.TokenID, payload.Deposit.TokenAmount)
+		payload.Deposit.TokenKind, payload.Deposit.TokenID, payload.Deposit.TokenAmount,
+	)
 	if err != nil {
 		ctx.Logger().Error("[Transfer Gateway] failed to transfer Mainnet deposit", "err", err)
 		emitProcessEventError(ctx, "[TransferGateway transferTokenDeposit]"+err.Error(), ev)
@@ -905,11 +910,14 @@ func (gw *Gateway) WithdrawETH(ctx contract.Context, req *WithdrawETHRequest) er
 	return saveState(ctx, state)
 }
 
-// SubmitLoomCoinDepositTxHash is called by User to add txhash, which will be used to submit deposit event
-// User's account need to be mapped to an eth address for this to work.
+// SubmitDepositTxHash is called by a user to submit the Ethereum hash of a token deposit to the
+// Ethereum Gateway contract. Later the Oracle will verify the tx hash and forward the deposit event
+// to the DAppChain Gateway contract.
+// The user must have a mapping between their DAppChain address and their Eth address before they
+// can submit a tx hash.
 func (gw *Gateway) SubmitDepositTxHash(ctx contract.Context, req *SubmitDepositTxHashRequest) error {
-	if !ctx.FeatureEnabled(loomchain.TGHotWalletClearTxHashFeature, false) {
-		return ErrTGHotWalletClearTxFeatureDisabled
+	if !ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+		return ErrHotWalletFeatureDisabled
 	}
 
 	if req.TxHash == nil {
@@ -943,11 +951,11 @@ func (gw *Gateway) SubmitDepositTxHash(ctx contract.Context, req *SubmitDepositT
 	return saveDepositTxHash(ctx, ownerEthAddr, req.TxHash)
 }
 
-// ClearInvalidLoomCoinDepositTxHash is oracle only method called by oracle to clear
-// invalid tx hashes submitted by users
+// ClearInvalidDepositTxHash is an Oracle only method that's called by Oracle to clear invalid
+// hot wallet deposit tx hashes submitted by users.
 func (gw *Gateway) ClearInvalidDepositTxHash(ctx contract.Context, req *ClearInvalidDepositTxHashRequest) error {
-	if !ctx.FeatureEnabled(loomchain.TGHotWalletClearTxHashFeature, false) {
-		return ErrTGHotWalletClearTxFeatureDisabled
+	if !ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+		return ErrHotWalletFeatureDisabled
 	}
 
 	if req.TxHashes == nil {
@@ -992,8 +1000,10 @@ func (gw *Gateway) ClearInvalidDepositTxHash(ctx contract.Context, req *ClearInv
 	return saveExtendedState(ctx, extState)
 }
 
-// UnprocessedDepositTxHashes returns tx hashes that havent been processed yet by oracle
-func (gw *Gateway) UnprocessedDepositTxHashes(ctx contract.StaticContext, req *UnprocessedDepositTxHashesRequest) (*UnprocessedDepositTxHashesResponse, error) {
+// UnprocessedDepositTxHashes returns deposit tx hashes that havent been processed yet by the Oracle.
+func (gw *Gateway) UnprocessedDepositTxHashes(
+	ctx contract.StaticContext, req *UnprocessedDepositTxHashesRequest,
+) (*UnprocessedDepositTxHashesResponse, error) {
 	extState, err := loadExtendedState(ctx)
 	if err != nil {
 		return nil, err
@@ -2070,7 +2080,7 @@ func saveForeignAccount(ctx contract.Context, acct *ForeignAccount) error {
 }
 
 func loadDepositTxHash(ctx contract.StaticContext, owner loom.Address) ([]byte, error) {
-	tgTxHash := &TransferGatewayTxHash{}
+	tgTxHash := &HotWalletTxHash{}
 	err := ctx.Get(DepositTxHashKey(owner), tgTxHash)
 	if err != nil {
 		if err == contract.ErrNotFound {
@@ -2087,7 +2097,7 @@ func deleteDepositTxHash(ctx contract.Context, owner loom.Address) {
 }
 
 func saveDepositTxHash(ctx contract.Context, owner loom.Address, txHash []byte) error {
-	tgTxHash := &TransferGatewayTxHash{
+	tgTxHash := &HotWalletTxHash{
 		TxHash: txHash,
 	}
 	return ctx.Set(DepositTxHashKey(owner), tgTxHash)
@@ -2161,7 +2171,9 @@ func addOracle(ctx contract.Context, oracleAddr loom.Address) error {
 	ctx.GrantPermissionTo(oracleAddr, submitEventsPerm, oracleRole)
 	ctx.GrantPermissionTo(oracleAddr, signWithdrawalsPerm, oracleRole)
 	ctx.GrantPermissionTo(oracleAddr, verifyCreatorsPerm, oracleRole)
-	ctx.GrantPermissionTo(oracleAddr, clearInvalidTxHashesPerm, oracleRole)
+	if ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+		ctx.GrantPermissionTo(oracleAddr, clearInvalidTxHashesPerm, oracleRole)
+	}
 
 	err := ctx.Set(oracleStateKey(oracleAddr), &OracleState{Address: oracleAddr.MarshalPB()})
 	if err != nil {

@@ -73,6 +73,8 @@ type TransferGatewayConfig struct {
 	TronURI string
 	// Number of seconds ot wait before polling the next page if event server supports pagination
 	OracleEventPollDelay int32
+	// When true the Oracle will verify tx hashes of hot wallet deposits.
+	VerifyHotWalletDeposits bool
 }
 
 func DefaultConfig(rpcProxyPort int32) *TransferGatewayConfig {

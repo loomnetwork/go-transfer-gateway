@@ -176,7 +176,7 @@ func (gw *DAppChainGateway) PendingWithdrawals(mainnetGatewayAddr loom.Address) 
 	return resp.Withdrawals, nil
 }
 
-func (gw *DAppChainGateway) UnprocessedLoomCoinDepositTxHash() (*UnprocessedDepositTxHashesResponse, error) {
+func (gw *DAppChainGateway) GetUnprocessedDepositTxHashes() (*UnprocessedDepositTxHashesResponse, error) {
 	req := &UnprocessedDepositTxHashesRequest{}
 	resp := UnprocessedDepositTxHashesResponse{}
 	if _, err := gw.contract.StaticCall("UnprocessedDepositTxHashes", req, gw.caller, &resp); err != nil {

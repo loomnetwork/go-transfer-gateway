@@ -422,15 +422,22 @@ func (orc *Oracle) pollMainnet() error {
 		return err
 	}
 
-	solLoomAddr, err := orc.solGateway.LoomAddress(&bind.CallOpts{
-		Context: context.TODO(),
-	})
-	if err != nil {
-		return err
-	}
+	// TODO: Failing to fetch events shouldn't prevent the Oracle from verifying hot-wallet deposits,
+	//       and failing to verify hot wallet deposits shouldn't prevent the Oracle from submitting
+	//       fetched events. The two tasks shouldn't be interdependent in any way.
+	if orc.cfg.VerifyHotWalletDeposits {
+		solLoomAddr, err := orc.solGateway.LoomAddress(&bind.CallOpts{
+			Context: context.TODO(),
+		})
+		if err != nil {
+			return err
+		}
 
-	if err := orc.processEventsByTxHash(latestBlock, common.HexToAddress(orc.cfg.MainnetContractHexAddress), solLoomAddr); err != nil {
-		return err
+		if err := orc.processEventsByTxHash(
+			latestBlock, common.HexToAddress(orc.cfg.MainnetContractHexAddress), solLoomAddr,
+		); err != nil {
+			return err
+		}
 	}
 
 	if len(events) > 0 {
@@ -466,7 +473,7 @@ func (orc *Oracle) pollDAppChain() error {
 }
 
 func (orc *Oracle) getERC20DepositFromTxHash(currentConfirmedBlock uint64, gatewayAddr common.Address, solLoomAddr common.Address) ([]*MainnetEvent, [][]byte, error) {
-	unprocessedTxHashesResponse, err := orc.goGateway.UnprocessedLoomCoinDepositTxHash()
+	unprocessedTxHashesResponse, err := orc.goGateway.GetUnprocessedDepositTxHashes()
 	if err != nil {
 		return nil, nil, err
 	}
