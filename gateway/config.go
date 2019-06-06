@@ -73,6 +73,8 @@ type TransferGatewayConfig struct {
 	TronURI string
 	// Number of seconds ot wait before polling the next page if event server supports pagination
 	OracleEventPollDelay int32
+	// When true the Oracle will verify tx hashes of hot wallet deposits.
+	VerifyHotWalletDeposits bool
 }
 
 func DefaultConfig(rpcProxyPort int32) *TransferGatewayConfig {
@@ -190,6 +192,7 @@ func (c *TransferGatewayConfig) Validate() error {
 }
 
 func (c *TransferGatewayConfig) GetWithdrawerAddressBlacklist() ([]loom.Address, error) {
+
 	addrList := make([]loom.Address, 0, len(c.WithdrawerAddressBlacklist))
 	for _, addrStr := range c.WithdrawerAddressBlacklist {
 		addr, err := loom.ParseAddress(addrStr)
