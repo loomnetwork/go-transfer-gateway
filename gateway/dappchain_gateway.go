@@ -30,7 +30,10 @@ type (
 	UnverifiedContractCreator          = tgtypes.TransferGatewayUnverifiedContractCreator
 	VerifiedContractCreator            = tgtypes.TransferGatewayVerifiedContractCreator
 
-	ConfirmWithdrawalReceiptRequestV2 = tgtypes.TransferGatewayConfirmWithdrawalReceiptRequestV2
+	ConfirmWithdrawalReceiptRequestV2  = tgtypes.TransferGatewayConfirmWithdrawalReceiptRequestV2
+	ClearInvalidDepositTxHashRequest   = tgtypes.TransferGatewayClearInvalidDepositTxHashRequest
+	UnprocessedDepositTxHashesResponse = tgtypes.TransferGatewayUnprocessedDepositTxHashesResponse
+	UnprocessedDepositTxHashesRequest  = tgtypes.TransferGatewayUnprocessedDepositTxHashesRequest
 )
 
 const (
@@ -122,6 +125,31 @@ func (gw *DAppChainGateway) LastMainnetBlockNum() (uint64, error) {
 	return resp.State.LastMainnetBlockNum, nil
 }
 
+func (gw *DAppChainGateway) ClearInvalidDepositTxHashes(txHashes [][]byte) error {
+	req := &ClearInvalidDepositTxHashRequest{
+		TxHashes: txHashes,
+	}
+	if _, err := gw.contract.Call("ClearInvalidDepositTxHash", req, gw.signer, nil); err != nil {
+		gw.logger.Error("failed to commit ClearInvalidLoomCoinDepositTxHash tx", "err", err)
+		return err
+	}
+	gw.LastResponseTime = time.Now()
+	return nil
+}
+
+func (gw *DAppChainGateway) ProcessDepositEventByTxHash(events []*MainnetEvent) error {
+	// TODO: limit max message size to under 1MB
+	req := &ProcessEventBatchRequest{
+		Events: events,
+	}
+	if _, err := gw.contract.Call("ProcessDepositEventByTxHash", req, gw.signer, nil); err != nil {
+		gw.logger.Error("failed to commit ProcessDepositEventByTxHash tx", "err", err)
+		return err
+	}
+	gw.LastResponseTime = time.Now()
+	return nil
+}
+
 func (gw *DAppChainGateway) ProcessEventBatch(events []*MainnetEvent) error {
 	// TODO: limit max message size to under 1MB
 	req := &ProcessEventBatchRequest{
@@ -146,6 +174,17 @@ func (gw *DAppChainGateway) PendingWithdrawals(mainnetGatewayAddr loom.Address) 
 	}
 	gw.LastResponseTime = time.Now()
 	return resp.Withdrawals, nil
+}
+
+func (gw *DAppChainGateway) UnprocessedLoomCoinDepositTxHash() (*UnprocessedDepositTxHashesResponse, error) {
+	req := &UnprocessedDepositTxHashesRequest{}
+	resp := UnprocessedDepositTxHashesResponse{}
+	if _, err := gw.contract.StaticCall("UnprocessedDepositTxHashes", req, gw.caller, &resp); err != nil {
+		gw.logger.Error("failed to fetch unprocessed tx hashesfrom dappchain", "err", err)
+		return nil, err
+	}
+	gw.LastResponseTime = time.Now()
+	return &resp, nil
 }
 
 func (gw *DAppChainGateway) PendingWithdrawalsV2(mainnetGatewayAddr loom.Address) ([]*PendingWithdrawalSummary, error) {
