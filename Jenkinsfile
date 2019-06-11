@@ -46,7 +46,7 @@ builders['linux'] = {
 
         stage ('Build - Linux') {
           sh '''
-            ./jenkins.sh
+            ./src/github.com/loomnetwork/transfer-gateway/jenkins.sh
           '''
         }
       } catch (e) {
@@ -100,7 +100,7 @@ builders['osx'] = {
 
         stage ('Build - OSX') {
           sh '''
-            ./jenkins.sh
+            ./src/github.com/loomnetwork/transfer-gateway/jenkins.sh
           '''
         }
       } catch (e) {
