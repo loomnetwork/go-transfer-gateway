@@ -11,6 +11,10 @@ SSHA3_DIR = $(GOPATH)/src/github.com/miguelmota/go-solidity-sha3
 HASHICORP_DIR = $(GOPATH)/src/github.com/hashicorp/go-plugin
 LEVIGO_DIR = $(GOPATH)/src/github.com/jmhodges/levigo
 BTCD_DIR = $(GOPATH)/src/github.com/btcsuite/btcd
+IAVL_DIR = $(GOPATH)/src/github.com/tendermint/iavl
+TENDERMINT_DIR = $(GOPATH)/src/github.com/tendermint/tendermint
+GO_AMINO_DIR = $(GOPATH)/src/github.com/tendermint/go-amino
+TENDERMINT_BTCD_DIR = $(GOPATH)/src/github.com/tendermint/btcd
 
 # NOTE: To build on Jenkins using a custom go-loom branch update the `deps` target below to checkout
 #       that branch, you only need to update GO_LOOM_GIT_REV if you wish to lock the build to a
@@ -28,6 +32,8 @@ BTCD_GIT_REV = 7d2daa5bfef28c5e282571bc06416516936115ee
 # that don't appear to be compatible with the gogo protobuf & protoc versions we use.
 # google.golang.org/genproto seems to be pulled in by the grpc package.
 GENPROTO_GIT_REV = b515fa19cec88c32f305a962f34ae60068947aea
+IAVL_GIT_REV = loomchain
+TENDERMINT_GIT_REV = loomchain
 
 BUILD_DATE = `date -Iseconds`
 GIT_SHA = `git rev-parse --verify HEAD`
@@ -72,7 +78,13 @@ $(GO_ETHEREUM_DIR):
 $(SSHA3_DIR):
 	git clone -q git@github.com:loomnetwork/go-solidity-sha3.git $@
 
-deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR)
+$(IAVL_DIR):
+	git clone -q git@github.com:loomnetwork/iavl.git $@
+
+$(TENDERMINT_DIR):
+	git clone -q git@github.com:loomnetwork/tendermint.git $@
+
+deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR) $(IAVL_DIR) $(TENDERMINT_DIR)
 	go get \
 		golang.org/x/crypto/ed25519 \
 		google.golang.org/grpc \
@@ -94,7 +106,14 @@ deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR)
 		github.com/phonkee/go-pubsub \
 		github.com/inconshreveable/mousetrap \
 		github.com/posener/wstest \
-		github.com/btcsuite/btcd
+		github.com/btcsuite/btcd \
+		github.com/allegro/bigcache \
+		github.com/gomodule/redigo/redis \
+		github.com/hashicorp/golang-lru \
+		github.com/stretchr/testify \
+		github.com/syndtr/goleveldb/leveldb \
+		github.com/tendermint/go-amino \
+		github.com/tendermint/btcd/btcec
 
 	cd $(PLUGIN_DIR) && git checkout master && git pull && git checkout $(GO_LOOM_GIT_REV)
 	cd $(LOOMCHAIN_DIR) && git checkout master && git pull && git checkout $(LOOMCHAIN_GIT_REV)
@@ -105,6 +124,8 @@ deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR)
 	cd $(GO_ETHEREUM_DIR) && git checkout master && git pull && git checkout $(ETHEREUM_GIT_REV)
 	cd $(HASHICORP_DIR) && git checkout $(HASHICORP_GIT_REV)
 	cd $(BTCD_DIR) && git checkout $(BTCD_GIT_REV)
+	cd $(GO_AMINO_DIR) && git checkout v0.14.0
+	cd $(TENDERMINT_BTCD_DIR) && git checkout e5840949ff4fff0c56f9b6a541e22b63581ea9df
 	# fetch vendored packages
 	dep ensure -vendor-only
 

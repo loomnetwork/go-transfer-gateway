@@ -48,20 +48,6 @@ ignored = [
   name = "github.com/spf13/viper"
   version = "~1.0.0"
 
-[[constraint]]
-  name = "github.com/stretchr/testify"
-  version = "~1.2.1"
-
-[[override]]
-  name = "github.com/tendermint/tendermint"
-  source = "https://github.com/loomnetwork/tendermint.git"
-  revision = "29bb7b1ad483bec3c797ce24a5135465fccfa5f6"
-
-[[override]]
-  name = "github.com/tendermint/iavl"
-  source = "https://github.com/loomnetwork/iavl.git"
-  branch = "loomchain"
-
 [[override]]
   name = "github.com/tendermint/go-amino"
   version = "=0.14.0"
