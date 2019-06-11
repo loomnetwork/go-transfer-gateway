@@ -30,7 +30,8 @@ builders['linux'] = {
                 mergeTarget: 'master'
                 ]],
               [$class: 'CleanBeforeCheckout'],
-              [$class: 'PruneStaleBranch']
+              [$class: 'PruneStaleBranch'],
+              [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src/github.com/loomnetwork/transfer-gateway']
               ],
             submoduleCfg: [],
             userRemoteConfigs:
@@ -83,7 +84,8 @@ builders['osx'] = {
                 mergeTarget: 'master'
                 ]],
               [$class: 'CleanBeforeCheckout'],
-              [$class: 'PruneStaleBranch']
+              [$class: 'PruneStaleBranch'],
+              [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src/github.com/loomnetwork/transfer-gateway']
               ],
             submoduleCfg: [],
             userRemoteConfigs:
