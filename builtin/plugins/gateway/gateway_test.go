@@ -2042,8 +2042,10 @@ func (ts *GatewayTestSuite) TestCheckSeenTxHash() {
 			},
 		},
 	})
-	require.EqualError(err, "no new events found in the batch", "ProcessEventBatch should not process seen tx hash")
+	require.NoError(err)
 	require.True(seenTxHashExist(gwHelper.ContractCtx(fakeCtx), txHash1))
+	// TODO: Need to verify that the deposit wasn't processed, probably sufficient to check the last
+	//       processed eth block tracked by the Gateway contract hasn't changed.
 
 	err = gwHelper.Contract.WithdrawToken(
 		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
