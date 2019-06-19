@@ -12,6 +12,7 @@ export GOPATH=`pwd`
 export PATH=$GOPATH:$PATH:/var/lib/jenkins/workspace/commongopath/bin:$GOPATH/bin
 
 # Clone loomchain
+rm -rf $GOPATH/src/$LOOMCHAIN_PKG
 git clone git@github.com:loomnetwork/loomchain.git $GOPATH/src/$LOOMCHAIN_PKG
 
 # Get into the source tree to build

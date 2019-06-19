@@ -29,7 +29,7 @@ builders['linux'] = {
                 mergeRemote: 'origin',
                 mergeTarget: 'master'
                 ]],
-              [$class: 'CleanBeforeCheckout'],
+              [$class: 'WipeWorkspace'],
               [$class: 'PruneStaleBranch'],
               [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src/github.com/loomnetwork/transfer-gateway']
               ],
@@ -83,7 +83,7 @@ builders['osx'] = {
                 mergeRemote: 'origin',
                 mergeTarget: 'master'
                 ]],
-              [$class: 'CleanBeforeCheckout'],
+              [$class: 'WipeWorkspace'],
               [$class: 'PruneStaleBranch'],
               [$class: 'RelativeTargetDirectory', relativeTargetDir: 'src/github.com/loomnetwork/transfer-gateway']
               ],
