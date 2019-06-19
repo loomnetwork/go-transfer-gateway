@@ -992,6 +992,29 @@ func (ts *GatewayTestSuite) TestWithdrawalRestrictions() {
 		},
 	)
 	require.NoError(err)
+
+	// ERC20 withdrawal restriction test
+	// Deploy ERC20 Solidity contract to DAppChain EVM, mint some ERC20 and transfer to ts.dAppAddr
+	erc20Addr, err := deployTokenContract(fakeCtx, "SampleERC20Token", gwHelper.Address, ts.dAppAddr3)
+	require.NoError(err)
+	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr2, erc20Addr))
+	erc20 := newERC20Context(gwHelper.ContractCtx(fakeCtx), erc20Addr)
+	initialAmount := big.NewInt(200)
+	zeroAmount := big.NewInt(0)
+	require.NoError(erc20.mintToGateway(initialAmount))
+	require.NoError(erc20.transfer(ts.dAppAddr3, initialAmount))
+
+	//Withdraw ERC20 with zero amount
+	err = gwHelper.Contract.WithdrawToken(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr3)),
+		&WithdrawTokenRequest{
+			TokenContract: ethTokenAddr2.MarshalPB(),
+			TokenKind:     TokenKind_ERC20,
+			TokenAmount:   &types.BigUInt{Value: *loom.NewBigUInt(zeroAmount)},
+			Recipient:     ts.ethAddr3.MarshalPB(),
+		},
+	)
+	require.NoError(err)
 }
 
 func (ts *GatewayTestSuite) TestReclaimTokensAfterIdentityMapping() {
