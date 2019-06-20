@@ -281,7 +281,7 @@ func (gw *Gateway) Init(ctx contract.Context, req *InitRequest) error {
 	}
 
 	return saveState(ctx, &GatewayState{
-		Owner: req.Owner,
+		Owner:                 req.Owner,
 		NextContractMappingID: 1,
 		LastMainnetBlockNum:   req.FirstMainnetBlockNum,
 	})
@@ -673,12 +673,19 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 	if req.TokenContract == nil {
 		return ErrInvalidRequest
 	}
+
 	switch req.TokenKind {
 	case TokenKind_ERC721:
 		// assume TokenID == nil means TokenID == 0
 	case TokenKind_ERC721X, TokenKind_ERC20, TokenKind_TRX, TokenKind_TRC20:
 		if req.TokenAmount == nil {
 			return ErrInvalidRequest
+		}
+
+		if ctx.FeatureEnabled(loomchain.TGCheckZeroAmount, false) {
+			if req.TokenAmount.Value.Cmp(loom.NewBigUIntFromInt(0)) == 0 {
+				return ErrInvalidRequest
+			}
 		}
 	default:
 		return ErrInvalidRequest

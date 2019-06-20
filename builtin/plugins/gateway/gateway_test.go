@@ -993,6 +993,9 @@ func (ts *GatewayTestSuite) TestWithdrawalRestrictions() {
 	)
 	require.NoError(err)
 
+	fakeCtx = fakeCtx.WithFeature(loomchain.TGCheckZeroAmount, true)
+	require.True(fakeCtx.FeatureEnabled(loomchain.TGCheckZeroAmount, false))
+
 	// ERC20 withdrawal restriction test
 	// Deploy ERC20 Solidity contract to DAppChain EVM, mint some ERC20 and transfer to ts.dAppAddr
 	erc20Addr, err := deployTokenContract(fakeCtx, "SampleERC20Token", gwHelper.Address, ts.dAppAddr3)
@@ -1014,7 +1017,46 @@ func (ts *GatewayTestSuite) TestWithdrawalRestrictions() {
 			Recipient:     ts.ethAddr3.MarshalPB(),
 		},
 	)
-	require.NoError(err)
+	require.Equal(ErrInvalidRequest, err)
+
+	//Withdraw ERC721X with zero amount
+	err = gwHelper.Contract.WithdrawToken(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr3)),
+		&WithdrawTokenRequest{
+			TokenContract: ethTokenAddr.MarshalPB(),
+			TokenKind:     TokenKind_ERC721X,
+			TokenID:       &types.BigUInt{Value: *loom.NewBigUInt(token3)},
+			TokenAmount:   &types.BigUInt{Value: *loom.NewBigUInt(zeroAmount)},
+			Recipient:     ts.ethAddr3.MarshalPB(),
+		},
+	)
+	require.Equal(ErrInvalidRequest, err)
+
+	//Withdraw TRX with zero amount
+	err = gwHelper.Contract.WithdrawToken(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr3)),
+		&WithdrawTokenRequest{
+			TokenContract: ethTokenAddr.MarshalPB(),
+			TokenKind:     TokenKind_TRX,
+			TokenID:       &types.BigUInt{Value: *loom.NewBigUInt(token3)},
+			TokenAmount:   &types.BigUInt{Value: *loom.NewBigUInt(zeroAmount)},
+			Recipient:     ts.ethAddr3.MarshalPB(),
+		},
+	)
+	require.Equal(ErrInvalidRequest, err)
+
+	//Withdraw TRC20 with zero amount
+	err = gwHelper.Contract.WithdrawToken(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr3)),
+		&WithdrawTokenRequest{
+			TokenContract: ethTokenAddr.MarshalPB(),
+			TokenKind:     TokenKind_TRC20,
+			TokenID:       &types.BigUInt{Value: *loom.NewBigUInt(token3)},
+			TokenAmount:   &types.BigUInt{Value: *loom.NewBigUInt(zeroAmount)},
+			Recipient:     ts.ethAddr3.MarshalPB(),
+		},
+	)
+	require.Equal(ErrInvalidRequest, err)
 }
 
 func (ts *GatewayTestSuite) TestReclaimTokensAfterIdentityMapping() {
