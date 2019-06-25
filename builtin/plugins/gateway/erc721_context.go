@@ -8,6 +8,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	loom "github.com/loomnetwork/go-loom"
 	contract "github.com/loomnetwork/go-loom/plugin/contractpb"
+	"github.com/loomnetwork/loomchain"
 )
 
 type erc721StaticContext struct {
@@ -30,6 +31,16 @@ func newERC721StaticContext(ctx contract.StaticContext, tokenAddr loom.Address) 
 }
 
 func (c *erc721StaticContext) exists(tokenID *big.Int) (bool, error) {
+	if c.ctx.FeatureEnabled(loomchain.TGFixERC721Feature, false) {
+		// exists is a non-standard ERC721 method, so call ownerOf instead and if that errors out
+		// it probably means the token doesn't exist
+		var result common.Address
+		if err := c.staticCallEVM("ownerOf", &result, tokenID); err != nil {
+			return false, nil
+		}
+		return true, nil
+	}
+
 	var result bool
 	return result, c.staticCallEVM("exists", &result, tokenID)
 }
