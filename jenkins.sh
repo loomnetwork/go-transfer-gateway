@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -x
+
 # Do make sure Jenkins is checking out to a sub directory in relative to PWD
 # "src/github.com/loomnetwork/transfer-gateway"
 # it's a config option
