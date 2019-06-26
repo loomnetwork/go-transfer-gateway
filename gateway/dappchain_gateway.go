@@ -37,13 +37,14 @@ type (
 )
 
 const (
-	TokenKind_ERC721X  = tgtypes.TransferGatewayTokenKind_ERC721X
-	TokenKind_ERC721   = tgtypes.TransferGatewayTokenKind_ERC721
-	TokenKind_ERC20    = tgtypes.TransferGatewayTokenKind_ERC20
-	TokenKind_ETH      = tgtypes.TransferGatewayTokenKind_ETH
-	TokenKind_LoomCoin = tgtypes.TransferGatewayTokenKind_LOOMCOIN
-	TokenKind_TRX      = tgtypes.TransferGatewayTokenKind_TRX
-	TokenKind_TRC20    = tgtypes.TransferGatewayTokenKind_TRC20
+	TokenKind_ERC721X      = tgtypes.TransferGatewayTokenKind_ERC721X
+	TokenKind_ERC721       = tgtypes.TransferGatewayTokenKind_ERC721
+	TokenKind_ERC20        = tgtypes.TransferGatewayTokenKind_ERC20
+	TokenKind_ETH          = tgtypes.TransferGatewayTokenKind_ETH
+	TokenKind_LoomCoin     = tgtypes.TransferGatewayTokenKind_LOOMCOIN
+	TokenKind_TRX          = tgtypes.TransferGatewayTokenKind_TRX
+	TokenKind_TRC20        = tgtypes.TransferGatewayTokenKind_TRC20
+	TokenKind_BNBLoomToken = tgtypes.TransferGatewayTokenKind_BNBLoomToken
 )
 
 // DAppChainGateway is a partial client-side binding of the Gateway Go contract
@@ -115,6 +116,25 @@ func ConnectToDAppChainTronGateway(
 	}, nil
 }
 
+func ConnectToDAppChainBinanceGateway(
+	loomClient *client.DAppChainRPCClient, caller loom.Address, signer auth.Signer,
+	logger *loom.Logger,
+) (*DAppChainGateway, error) {
+	gatewayAddr, err := loomClient.Resolve("binance-gateway")
+	if err != nil {
+		return nil, errors.Wrap(err, "failed to resolve Gateway Go contract address")
+	}
+
+	return &DAppChainGateway{
+		Address:          gatewayAddr,
+		LastResponseTime: time.Now(),
+		contract:         client.NewContract(loomClient, gatewayAddr.Local),
+		caller:           caller,
+		signer:           signer,
+		logger:           logger,
+	}, nil
+}
+
 func (gw *DAppChainGateway) LastMainnetBlockNum() (uint64, error) {
 	var resp GatewayStateResponse
 	if _, err := gw.contract.StaticCall("GetState", &GatewayStateRequest{}, gw.caller, &resp); err != nil {
@@ -155,6 +175,7 @@ func (gw *DAppChainGateway) ProcessEventBatch(events []*MainnetEvent) error {
 	req := &ProcessEventBatchRequest{
 		Events: events,
 	}
+
 	if _, err := gw.contract.Call("ProcessEventBatch", req, gw.signer, nil); err != nil {
 		gw.logger.Error("failed to commit ProcessEventBatch tx", "err", err)
 		return err
@@ -234,6 +255,43 @@ func (gw *DAppChainGateway) VerifyContractCreators(verifiedCreators []*VerifiedC
 		Creators: verifiedCreators,
 	}
 	_, err := gw.contract.Call("VerifyContractCreators", req, gw.signer, nil)
+	if err != nil {
+		return err
+	}
+	gw.LastResponseTime = time.Now()
+	return nil
+}
+
+func (gw *DAppChainGateway) GetPendingWithdrawals(mainnetGatewayAddr loom.Address) ([]*PendingWithdrawalSummary, error) {
+	req := &PendingWithdrawalsRequest{
+		MainnetGateway: mainnetGatewayAddr.MarshalPB(),
+		TxStatus:       tgtypes.TransferGatewayTxStatus_PENDING,
+	}
+	resp := PendingWithdrawalsResponse{}
+	if _, err := gw.contract.StaticCall("GetWithdrawalsWithStatus", req, gw.caller, &resp); err != nil {
+		gw.logger.Error("failed to fetch pending withdrawals from DAppChain", "err", err)
+		return nil, err
+	}
+	gw.LastResponseTime = time.Now()
+	return resp.Withdrawals, nil
+}
+
+func (gw *DAppChainGateway) GetProcessedWithdrawals(mainnetGatewayAddr loom.Address) ([]*PendingWithdrawalSummary, error) {
+	req := &PendingWithdrawalsRequest{
+		MainnetGateway: mainnetGatewayAddr.MarshalPB(),
+		TxStatus:       tgtypes.TransferGatewayTxStatus_PROCESSED,
+	}
+	resp := PendingWithdrawalsResponse{}
+	if _, err := gw.contract.StaticCall("GetWithdrawalsWithStatus", req, gw.caller, &resp); err != nil {
+		gw.logger.Error("failed to fetch processed withdrawals from DAppChain", "err", err)
+		return nil, err
+	}
+	gw.LastResponseTime = time.Now()
+	return resp.Withdrawals, nil
+}
+
+func (gw *DAppChainGateway) UpdateWithdrawalReceipt(req *ConfirmWithdrawalReceiptRequest) error {
+	_, err := gw.contract.Call("UpdateWithdrawalReceipt", req, gw.signer, nil)
 	if err != nil {
 		return err
 	}

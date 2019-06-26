@@ -15,6 +15,7 @@ const (
 	EthereumGateway GatewayType = 0 // default type
 	LoomCoinGateway GatewayType = 1
 	TronGateway     GatewayType = 2
+	BinanceGateway  GatewayType = 3
 )
 
 type (
@@ -46,6 +47,11 @@ func (gw *Gateway) Meta() (plugin.Meta, error) {
 			Name:    "tron-gateway",
 			Version: "0.1.0",
 		}, nil
+	case BinanceGateway:
+		return plugin.Meta{
+			Name:    "binance-gateway",
+			Version: "0.1.0",
+		}, nil
 	}
 	return plugin.Meta{}, errors.Errorf("invalid Gateway Type: %v", gw.Type)
 }
@@ -62,3 +68,6 @@ var UnsafeLoomCoinContract plugin.Contract = contract.MakePluginContract(&Unsafe
 
 var TronContract plugin.Contract = contract.MakePluginContract(&Gateway{})
 var UnsafeTronContract plugin.Contract = contract.MakePluginContract(&UnsafeGateway{Gateway{}})
+
+var BinanceContract plugin.Contract = contract.MakePluginContract(&Gateway{})
+var UnsafeBinanceContract plugin.Contract = contract.MakePluginContract(&UnsafeGateway{Gateway{}})

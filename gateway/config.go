@@ -73,8 +73,18 @@ type TransferGatewayConfig struct {
 	TronURI string
 	// Number of seconds ot wait before polling the next page if event server supports pagination
 	OracleEventPollDelay int32
+
+	// URI of Binance explorer the Oracle should connect to, and retrieve Mainnet events from.
+	BinanceEventURI string
+	// URI of Binance node the Oracle should connect to, for initializing Binance SDK client
+	BinanceNodeURI string
+
 	// When true the Oracle will verify tx hashes of hot wallet deposits.
 	VerifyHotWalletDeposits bool
+	// Generic mainnet hot wallet address in case mainnet does not have smart contract
+	MainnetHotWalletAddress string
+	//Asset symbol for Binance-dex gateway (mainnet contract address)
+	BinanceLoomToken string
 }
 
 func DefaultConfig(rpcProxyPort int32) *TransferGatewayConfig {
@@ -163,6 +173,40 @@ func DefaultTronConfig(rpcProxyPort int32) *TransferGatewayConfig {
 		OracleStartupDelay:            5,
 		OracleEventPollDelay:          1,
 		OracleQueryAddress:            "127.0.0.1:9996",
+		BatchSignFnConfig: &BatchWithdrawalSignFnConfig{
+			Enabled:                     false,
+			LogLevel:                    "info",
+			LogDestination:              "file://-",
+			MainnetPrivateKeyPath:       "",
+			MainnetPrivateKeyHsmEnabled: false,
+		},
+		WithdrawalSig: UnprefixedWithdrawalSigType,
+	}
+}
+
+func DefaultBinanceConfig(rpcProxyPort int32) *TransferGatewayConfig {
+	return &TransferGatewayConfig{
+		ContractEnabled:               false,
+		Unsafe:                        false,
+		OracleEnabled:                 false,
+		BinanceEventURI:               "https://testnet-explorer.binance.org",
+		BinanceNodeURI:                "testnet-dex.binance.org",
+		MainnetContractHexAddress:     "",
+		MainnetPrivateKeyHsmEnabled:   false,
+		MainnetPrivateKeyPath:         "",
+		DappChainPrivateKeyHsmEnabled: false,
+		DAppChainPrivateKeyPath:       "",
+		DAppChainReadURI:              fmt.Sprintf("http://127.0.0.1:%d/query", rpcProxyPort),
+		DAppChainWriteURI:             fmt.Sprintf("http://127.0.0.1:%d/rpc", rpcProxyPort),
+		DAppChainEventsURI:            fmt.Sprintf("ws://127.0.0.1:%d/queryws", rpcProxyPort),
+		DAppChainPollInterval:         10,
+		MainnetPollInterval:           10,
+		NumMainnetBlockConfirmations:  30,
+		OracleLogLevel:                "info",
+		OracleLogDestination:          "file://binance_tgoracle.log",
+		OracleStartupDelay:            5,
+		OracleEventPollDelay:          1,
+		OracleQueryAddress:            "127.0.0.1:9995",
 		BatchSignFnConfig: &BatchWithdrawalSignFnConfig{
 			Enabled:                     false,
 			LogLevel:                    "info",

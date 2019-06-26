@@ -199,7 +199,6 @@ func createOracle(cfg *TransferGatewayConfig, chainID string,
 		mainnetPrivateKey, err = LoadMainnetPrivateKey(cfg.MainnetPrivateKeyHsmEnabled, cfg.MainnetPrivateKeyPath)
 		if err != nil {
 			return nil, err
-
 		}
 	}
 
@@ -373,7 +372,6 @@ func (orc *Oracle) Run() {
 		}
 		time.Sleep(orc.reconnectInterval)
 	}
-
 	skipSleep := true
 	for {
 		if !skipSleep {
@@ -468,7 +466,6 @@ func (orc *Oracle) pollDAppChain() error {
 			return err
 		}
 	}
-
 	return nil
 }
 
@@ -713,13 +710,13 @@ func (orc *Oracle) getLatestEthBlockNumber() (uint64, error) {
 	case gwcontract.EthereumGateway, gwcontract.LoomCoinGateway:
 		blockHeader, err := orc.ethClient.HeaderByNumber(context.TODO(), nil)
 		if err != nil {
-
+			return 0, err
 		}
 		return blockHeader.Number.Uint64(), nil
 	case gwcontract.TronGateway:
 		latestBlock, err := orc.tronClient.GetLastBlockNumber(context.TODO())
 		if err != nil {
-
+			return 0, err
 		}
 		return latestBlock, nil
 	}
@@ -767,7 +764,6 @@ func (orc *Oracle) fetchEvents(startBlock, endBlock uint64) ([]*MainnetEvent, er
 		if err != nil {
 			return nil, err
 		}
-
 	case gwcontract.EthereumGateway:
 		erc721Deposits, err = orc.fetchERC721Deposits(filterOpts)
 		if err != nil {
@@ -793,7 +789,6 @@ func (orc *Oracle) fetchEvents(startBlock, endBlock uint64) ([]*MainnetEvent, er
 		if err != nil {
 			return nil, err
 		}
-
 	case gwcontract.TronGateway:
 		trxDeposits, err = orc.fetchTRXDeposits(filterOpts)
 		if err != nil {

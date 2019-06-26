@@ -32,6 +32,7 @@ var (
 	addr2 = loom.MustParseAddress("chain:0xfa4c7920accfd66b86f5fd0e69682a79f762d49e")
 	addr3 = loom.MustParseAddress("chain:0x5cecd1f7261e1f4c684e297be3edf03b825e01c4")
 	addr4 = loom.MustParseAddress("chain:0x5cecd1f7261e1f4c684e297be3edf03b825e01c9")
+	addr5 = loom.MustParseAddress("chain:0x5cecd1f7261e1f4c684e297be3edf03b825e01c8")
 
 	dappAccAddr1 = loom.MustParseAddress("chain:0x5cecd1f7261e1f4c684e297be3edf03b825e01c4")
 	ethAccAddr1  = loom.MustParseAddress("eth:0x5cecd1f7261e1f4c684e297be3edf03b825e01c4")
@@ -43,6 +44,8 @@ var (
 
 	tronTokenAddr  = loom.MustParseAddress("tron:0x774cc7b7d66e5aec6cbfcffb96c5d1421758402f")
 	tronTokenAddr2 = loom.MustParseAddress("tron:0xc8C88F1c531fcC6C55395b57CFdF4226Fbf77799")
+
+	binanceTokenAddr = loom.MustParseAddress("binance:0xb16a379ec18d4093666f8f38b11a3071c920207d")
 )
 
 const (
@@ -70,11 +73,14 @@ type GatewayTestSuite struct {
 	dAppAddr2         loom.Address
 	dAppAddr3         loom.Address
 	dAppAddr4         loom.Address
+	dAppAddr5         loom.Address
 	validatorsDetails []*testValidator
 	tronKey           *ecdsa.PrivateKey
 	tronKey2          *ecdsa.PrivateKey
 	tronAddr          loom.Address
 	tronAddr2         loom.Address
+	binanceKey        *ecdsa.PrivateKey
+	binanceAddr       loom.Address
 }
 
 func (ts *GatewayTestSuite) SetupTest() {
@@ -94,6 +100,7 @@ func (ts *GatewayTestSuite) SetupTest() {
 	ts.dAppAddr2 = loom.Address{ChainID: "chain", Local: addr2.Local}
 	ts.dAppAddr3 = loom.Address{ChainID: "chain", Local: addr3.Local}
 	ts.dAppAddr4 = loom.Address{ChainID: "chain", Local: addr4.Local}
+	ts.dAppAddr5 = loom.Address{ChainID: "chain", Local: addr5.Local}
 	ts.tronKey, err = crypto.GenerateKey()
 	require.NoError(err)
 	tronLocalAddr, err := loom.LocalAddressFromHexString(crypto.PubkeyToAddress(ts.tronKey.PublicKey).Hex())
@@ -115,6 +122,12 @@ func (ts *GatewayTestSuite) SetupTest() {
 	ethLocalAddr4, err1 := loom.LocalAddressFromHexString(crypto.PubkeyToAddress(ts.ethKey4.PublicKey).Hex())
 	require.NoError(err1)
 	ts.ethAddr4 = loom.Address{ChainID: "eth", Local: ethLocalAddr4}
+	var err2 error
+	ts.binanceKey, err2 = crypto.GenerateKey()
+	require.NoError(err2)
+	bnbLocalAddr, err2 := loom.LocalAddressFromHexString(crypto.PubkeyToAddress(ts.binanceKey.PublicKey).Hex())
+	require.NoError(err2)
+	ts.binanceAddr = loom.Address{ChainID: "binance", Local: bnbLocalAddr}
 
 	ts.validatorsDetails = make([]*testValidator, 5)
 	for i, _ := range ts.validatorsDetails {
@@ -2311,4 +2324,87 @@ func (ts *GatewayTestSuite) TestTronGateway() {
 		},
 	})
 	require.NoError(err)
+}
+
+// Test Deposit and Withdraw LOOM token between plasma chain and binance chain
+func (ts *GatewayTestSuite) TestBinanceGateway() {
+	ts.T().Skip("Coin contract doesn't allow the Binance Gateway contract to mint LOOM yet")
+
+	require := ts.Require()
+	ownerAddr := ts.dAppAddr
+	oracleAddr := ts.dAppAddr2
+	czBinanceAddr := ts.binanceAddr
+	czBinanceDappAddr := ts.dAppAddr5
+
+	fakeCtx := plugin.CreateFakeContextWithEVM(oracleAddr, loom.RootAddress("chain"))
+	addressMapper, err := deployAddressMapperContract(fakeCtx)
+	require.NoError(err)
+
+	sig, err := address_mapper.SignIdentityMapping(czBinanceAddr, czBinanceDappAddr, ts.binanceKey)
+	require.NoError(err)
+
+	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(czBinanceDappAddr), czBinanceAddr, czBinanceDappAddr, sig))
+
+	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   ownerAddr.MarshalPB(),
+		Oracles: []*types.Address{oracleAddr.MarshalPB()},
+	}, BinanceGateway)
+	require.NoError(err)
+
+	// deploy LOOM coin
+	loomAddr, err := deployLoomCoinContract(fakeCtx)
+	require.NoError(err)
+	// depositing from binance we put Dapp
+	loomamountsByBlock := []int64{160, 239, 581}
+	loomdeposits := genLoomDepositsFromBinance(
+		loomAddr.Address,
+		czBinanceDappAddr,
+		[]uint64{71, 73, 75},
+		loomamountsByBlock,
+	)
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: loomdeposits,
+	})
+	require.NoError(err)
+
+	loomcoin := newcoinStaticContext(gwHelper.ContractCtx(fakeCtx))
+	bal, err := loomcoin.balanceOf(czBinanceDappAddr)
+	require.NoError(err)
+	require.Equal(int64(980), bal.Int64())
+
+	resp, err := gwHelper.Contract.GetUnclaimedContractTokens(gwHelper.ContractCtx(fakeCtx), &GetUnclaimedContractTokensRequest{TokenAddress: loomAddr.Address.MarshalPB()})
+	require.NoError(err)
+	require.Equal(loom.NewBigUIntFromInt(0), &resp.UnclaimedAmount.Value)
+
+	// cz withdraw LOOM coin from dAppChain Gateway
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *loom.NewBigUIntFromInt(100)},
+			Recipient:     czBinanceAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 80,
+				Payload: &MainnetWithdrawalEvent{
+					Withdrawal: &MainnetTokenWithdrawn{
+						TokenKind:     TokenKind_LoomCoin,
+						TokenContract: loomcoin.contractAddr.MarshalPB(),
+						TokenOwner:    czBinanceAddr.MarshalPB(),
+						TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(100)},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(err)
+
+	balanceAfter, err := loomcoin.balanceOf(czBinanceDappAddr)
+	require.NoError(err)
+	require.Equal(int64(880), balanceAfter.Int64())
 }
