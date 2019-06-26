@@ -67,8 +67,11 @@ type (
 	WithdrawTokenError                 = tgtypes.TransferGatewayWithdrawTokenError
 	WithdrawLoomCoinError              = tgtypes.TransferGatewayWithdrawLoomCoinError
 	MainnetEventTxHashInfo             = tgtypes.TransferGatewayMainnetEventTxHashInfo
-
-	WithdrawLoomCoinRequest = tgtypes.TransferGatewayWithdrawLoomCoinRequest
+	GetContractMappingRequest          = tgtypes.TransferGatewayGetContractMappingRequest
+	GetContractMappingResponse         = tgtypes.TransferGatewayGetContractMappingResponse
+	ListContractMappingRequest         = tgtypes.TransferGatewayListContractMappingRequest
+	ListContractMappingResponse        = tgtypes.TransferGatewayListContractMappingResponse
+	WithdrawLoomCoinRequest            = tgtypes.TransferGatewayWithdrawLoomCoinRequest
 
 	TrustedValidatorsRequest  = tgtypes.TransferGatewayTrustedValidatorsRequest
 	TrustedValidatorsResponse = tgtypes.TransferGatewayTrustedValidatorsResponse

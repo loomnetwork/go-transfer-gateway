@@ -5,10 +5,11 @@ package gateway
 import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gogo/protobuf/proto"
-	loom "github.com/loomnetwork/go-loom"
+	"github.com/loomnetwork/go-loom"
 	tgtypes "github.com/loomnetwork/go-loom/builtin/types/transfer_gateway"
 	"github.com/loomnetwork/go-loom/common/evmcompat"
 	contract "github.com/loomnetwork/go-loom/plugin/contractpb"
+	"github.com/loomnetwork/go-loom/types"
 	ssha "github.com/miguelmota/go-solidity-sha3"
 )
 
@@ -207,6 +208,78 @@ func (gw *Gateway) VerifyContractCreators(ctx contract.Context,
 	}
 
 	return nil
+}
+
+// GetContractMapping attempts to find a pending or confirmed mappings for the given contract address.
+func (gw *Gateway) GetContractMapping(ctx contract.StaticContext, req *GetContractMappingRequest) (*GetContractMappingResponse, error) {
+	var mapping ContractAddressMapping
+	var isPending bool
+	var mappedAddress *types.Address
+	if err := ctx.Get(contractAddrMappingKey(loom.UnmarshalAddressPB(req.From)), &mapping); err == nil {
+		isPending = false
+		mappedAddress = mapping.To
+	} else {
+		if err != contract.ErrNotFound {
+			return nil, err
+		} else {
+			for _, entry := range ctx.Range(pendingContractMappingKeyPrefix) {
+				var mapping PendingContractMapping
+				if err := proto.Unmarshal(entry.Value, &mapping); err != nil {
+					return nil, err
+				}
+				if loom.UnmarshalAddressPB(mapping.ForeignContract).Compare(loom.UnmarshalAddressPB(req.From)) == 0 {
+					isPending = true
+					mappedAddress = mapping.LocalContract
+					break
+				}
+				if loom.UnmarshalAddressPB(mapping.LocalContract).Compare(loom.UnmarshalAddressPB(req.From)) == 0 {
+					isPending = true
+					mappedAddress = mapping.ForeignContract
+					break
+				}
+			}
+		}
+	}
+	return &GetContractMappingResponse{
+		MappedAddress: mappedAddress,
+		IsPending:     isPending,
+		Found:         mappedAddress != nil,
+	}, nil
+}
+
+// ListContractMapping returns a list of all pending and confirmed contract mappings.
+func (gw *Gateway) ListContractMapping(ctx contract.StaticContext, req *ListContractMappingRequest) (*ListContractMappingResponse, error) {
+	var mappings []*ContractAddressMapping
+	var pendingmappings []*PendingContractMapping
+	pendingMappingsKeysSet := make(map[string]bool)
+	confirmedMappingKeysSet := make(map[string]bool)
+	for _, entry := range ctx.Range(contractAddrMappingKeyPrefix) {
+		var mapping ContractAddressMapping
+		if err := proto.Unmarshal(entry.Value, &mapping); err != nil {
+			return nil, err
+		}
+		if _, ok := confirmedMappingKeysSet[loom.UnmarshalAddressPB(mapping.From).String()]; !ok {
+			confirmedMappingKeysSet[loom.UnmarshalAddressPB(mapping.To).String()] = true
+			confirmedMappingKeysSet[loom.UnmarshalAddressPB(mapping.From).String()] = true
+			mappings = append(mappings, &mapping)
+		}
+	}
+	for _, entry := range ctx.Range(pendingContractMappingKeyPrefix) {
+		var mapping PendingContractMapping
+		if err := proto.Unmarshal(entry.Value, &mapping); err != nil {
+			return nil, err
+		}
+		if _, ok := pendingMappingsKeysSet[loom.UnmarshalAddressPB(mapping.LocalContract).String()]; !ok {
+			pendingMappingsKeysSet[loom.UnmarshalAddressPB(mapping.LocalContract).String()] = true
+			pendingMappingsKeysSet[loom.UnmarshalAddressPB(mapping.ForeignContract).String()] = true
+			pendingmappings = append(pendingmappings, &mapping)
+		}
+
+	}
+	return &ListContractMappingResponse{
+		ConfimedMappings: mappings,
+		PendingMappings:  pendingmappings,
+	}, nil
 }
 
 func confirmContractMapping(ctx contract.Context, pendingMappingKey []byte, mapping *PendingContractMapping,

@@ -1958,6 +1958,89 @@ func (ts *GatewayTestSuite) TestAddNewAuthorizedContractMapping() {
 	require.Equal(ErrContractMappingExists, err, "Contract re-mapping shouldn't be allowed")
 }
 
+func (ts *GatewayTestSuite) TestFetchContractMapping() {
+	require := ts.Require()
+
+	ownerAddr := ts.dAppAddr
+	oracleAddr := ts.dAppAddr2
+	userAddr := ts.dAppAddr3
+	foreignCreatorAddr := ts.ethAddr
+	ethTokenAddr := loom.MustParseAddress("eth:0xb16a379ec18d4093666f8f38b11a3071c920207d")
+	fakeCtx := plugin.CreateFakeContextWithEVM(userAddr, loom.RootAddress("chain"))
+
+	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   ownerAddr.MarshalPB(),
+		Oracles: []*types.Address{oracleAddr.MarshalPB()},
+	}, EthereumGateway)
+	require.NoError(err)
+
+	// Deploy ERC721 Solidity contract to DAppChain EVM
+	dappTokenAddr, err := deployTokenContract(fakeCtx, "SampleERC721Token", gwHelper.Address, userAddr)
+	require.NoError(err)
+
+	hash := ssha.SoliditySHA3(
+		ssha.Address(common.BytesToAddress(ethTokenAddr.Local)),
+		ssha.Address(common.BytesToAddress(dappTokenAddr.Local)),
+	)
+
+	sig, err := evmcompat.GenerateTypedSig(hash, ts.ethKey, evmcompat.SignatureType_EIP712)
+	require.NoError(err)
+
+	// When a user adds a contract mapping a pending contract mapping should be created
+	require.NoError(gwHelper.Contract.AddContractMapping(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userAddr)),
+		&AddContractMappingRequest{
+			ForeignContract:           ethTokenAddr.MarshalPB(),
+			LocalContract:             dappTokenAddr.MarshalPB(),
+			ForeignContractCreatorSig: sig,
+			ForeignContractTxHash:     []byte("0xdeadbeef"),
+		},
+	))
+
+	resp, err := gwHelper.Contract.ListContractMapping(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userAddr)),
+		&ListContractMappingRequest{})
+	//Creates 1 Pending mapping
+	require.Equal(1, len(resp.PendingMappings))
+
+	// Oracle retrieves the tx hash from the pending contract mapping
+	unverifiedCreatorsResp, err := gwHelper.Contract.UnverifiedContractCreators(
+		gwHelper.ContractCtx(fakeCtx.WithSender(oracleAddr)),
+		&UnverifiedContractCreatorsRequest{})
+	require.NoError(err)
+	require.Len(unverifiedCreatorsResp.Creators, 1)
+
+	// Oracle extracts the contract and creator address from the tx matching the hash, and sends
+	// them back to the contract
+	require.NoError(gwHelper.Contract.VerifyContractCreators(
+		gwHelper.ContractCtx(fakeCtx.WithSender(oracleAddr)),
+		&VerifyContractCreatorsRequest{
+			Creators: []*VerifiedContractCreator{
+				&VerifiedContractCreator{
+					ContractMappingID: unverifiedCreatorsResp.Creators[0].ContractMappingID,
+					Creator:           foreignCreatorAddr.MarshalPB(),
+					Contract:          ethTokenAddr.MarshalPB(),
+				},
+			},
+		}))
+
+	resp1, err := gwHelper.Contract.ListContractMapping(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userAddr)),
+		&ListContractMappingRequest{})
+
+	require.Equal(0, len(resp1.PendingMappings))
+	//Unique confirmed mappings are created
+	require.Equal(1, len(resp1.ConfimedMappings))
+
+	resp3, err := gwHelper.Contract.GetContractMapping(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userAddr)),
+		&GetContractMappingRequest{From: ethTokenAddr.MarshalPB()})
+
+	require.Equal(resp3.MappedAddress, dappTokenAddr.MarshalPB())
+	require.Equal(resp3.IsPending, false)
+
+}
+
 // A little sanity check to verify TokenID == 0 doesn't get unmarshalled to TokenID == nil
 func (ts *GatewayTestSuite) TestUnclaimedTokenMarshalling() {
 	require := ts.Require()
