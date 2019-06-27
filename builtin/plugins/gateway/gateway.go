@@ -818,6 +818,11 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 		TokenAmount:     req.TokenAmount,
 		WithdrawalNonce: foreignAccount.WithdrawalNonce,
 	}
+
+	if gw.Type == BinanceGateway {
+		account.WithdrawalReceipt.TokenWithdrawer = req.Recipient
+	}
+
 	foreignAccount.CurrentWithdrawer = ownerAddr.MarshalPB()
 
 	event, err := proto.Marshal(account.WithdrawalReceipt)
@@ -2565,6 +2570,7 @@ func filterWithdrawalsByTxStatus(ctx contract.StaticContext, status TxStatus) ([
 			TokenAmount:     receipt.TokenAmount,
 			TokenWithdrawer: receipt.TokenWithdrawer,
 			TxHash:          receipt.TxHash,
+			TokenContract:   receipt.TokenContract,
 		})
 	}
 
