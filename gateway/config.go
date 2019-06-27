@@ -184,40 +184,6 @@ func DefaultTronConfig(rpcProxyPort int32) *TransferGatewayConfig {
 	}
 }
 
-func DefaultBinanceConfig(rpcProxyPort int32) *TransferGatewayConfig {
-	return &TransferGatewayConfig{
-		ContractEnabled:               false,
-		Unsafe:                        false,
-		OracleEnabled:                 false,
-		BinanceEventURI:               "https://testnet-explorer.binance.org",
-		BinanceNodeURI:                "testnet-dex.binance.org",
-		MainnetContractHexAddress:     "",
-		MainnetPrivateKeyHsmEnabled:   false,
-		MainnetPrivateKeyPath:         "",
-		DappChainPrivateKeyHsmEnabled: false,
-		DAppChainPrivateKeyPath:       "",
-		DAppChainReadURI:              fmt.Sprintf("http://127.0.0.1:%d/query", rpcProxyPort),
-		DAppChainWriteURI:             fmt.Sprintf("http://127.0.0.1:%d/rpc", rpcProxyPort),
-		DAppChainEventsURI:            fmt.Sprintf("ws://127.0.0.1:%d/queryws", rpcProxyPort),
-		DAppChainPollInterval:         10,
-		MainnetPollInterval:           10,
-		NumMainnetBlockConfirmations:  30,
-		OracleLogLevel:                "info",
-		OracleLogDestination:          "file://binance_tgoracle.log",
-		OracleStartupDelay:            5,
-		OracleEventPollDelay:          1,
-		OracleQueryAddress:            "127.0.0.1:9995",
-		BatchSignFnConfig: &BatchWithdrawalSignFnConfig{
-			Enabled:                     false,
-			LogLevel:                    "info",
-			LogDestination:              "file://-",
-			MainnetPrivateKeyPath:       "",
-			MainnetPrivateKeyHsmEnabled: false,
-		},
-		WithdrawalSig: UnprefixedWithdrawalSigType,
-	}
-}
-
 // Clone returns a deep clone of the config.
 func (c *TransferGatewayConfig) Clone() *TransferGatewayConfig {
 	if c == nil {
