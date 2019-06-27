@@ -93,6 +93,27 @@ func genLoomDepositsFromBinance(tokenAddr, owner loom.Address, blocks []uint64, 
 	return result
 }
 
+func genBEP2DepositsFromBinance(tokenAddr, owner loom.Address, blocks []uint64, values []int64) []*MainnetEvent {
+	if len(values) != len(blocks) {
+		panic("insufficient number of values")
+	}
+	result := []*MainnetEvent{}
+	for i, b := range blocks {
+		result = append(result, &MainnetEvent{
+			EthBlock: b,
+			Payload: &MainnetDepositEvent{
+				Deposit: &MainnetTokenDeposited{
+					TokenKind:     TokenKind_BEP2,
+					TokenContract: tokenAddr.MarshalPB(),
+					TokenOwner:    owner.MarshalPB(),
+					TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(values[i])},
+				},
+			},
+		})
+	}
+	return result
+}
+
 func genERC20Deposits(tokenAddr, owner loom.Address, blocks []uint64, values []int64) []*MainnetEvent {
 	if len(values) != len(blocks) {
 		panic("insufficient number of values")

@@ -45,6 +45,7 @@ const (
 	TokenKind_TRX          = tgtypes.TransferGatewayTokenKind_TRX
 	TokenKind_TRC20        = tgtypes.TransferGatewayTokenKind_TRC20
 	TokenKind_BNBLoomToken = tgtypes.TransferGatewayTokenKind_BNBLoomToken
+	TokenKind_BEP2         = tgtypes.TransferGatewayTokenKind_BEP2
 )
 
 // DAppChainGateway is a partial client-side binding of the Gateway Go contract
@@ -262,10 +263,9 @@ func (gw *DAppChainGateway) VerifyContractCreators(verifiedCreators []*VerifiedC
 	return nil
 }
 
-func (gw *DAppChainGateway) GetPendingWithdrawals(mainnetGatewayAddr loom.Address) ([]*PendingWithdrawalSummary, error) {
+func (gw *DAppChainGateway) GetPendingWithdrawals() ([]*PendingWithdrawalSummary, error) {
 	req := &PendingWithdrawalsRequest{
-		MainnetGateway: mainnetGatewayAddr.MarshalPB(),
-		TxStatus:       tgtypes.TransferGatewayTxStatus_PENDING,
+		TxStatus: tgtypes.TransferGatewayTxStatus_PENDING,
 	}
 	resp := PendingWithdrawalsResponse{}
 	if _, err := gw.contract.StaticCall("GetWithdrawalsWithStatus", req, gw.caller, &resp); err != nil {

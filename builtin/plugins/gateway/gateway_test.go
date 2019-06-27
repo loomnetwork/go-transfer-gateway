@@ -45,7 +45,8 @@ var (
 	tronTokenAddr  = loom.MustParseAddress("tron:0x774cc7b7d66e5aec6cbfcffb96c5d1421758402f")
 	tronTokenAddr2 = loom.MustParseAddress("tron:0xc8C88F1c531fcC6C55395b57CFdF4226Fbf77799")
 
-	binanceTokenAddr = loom.MustParseAddress("binance:0xb16a379ec18d4093666f8f38b11a3071c920207d")
+	binanceTokenAddr  = loom.MustParseAddress("binance:0xb16a379ec18d4093666f8f38b11a3071c920207d")
+	binanceTokenAddr2 = loom.MustParseAddress("binance:0x0000000000000000000000004d4f4f4c2d434243")
 )
 
 const (
@@ -2490,4 +2491,86 @@ func (ts *GatewayTestSuite) TestBinanceGateway() {
 	balanceAfter, err := loomcoin.balanceOf(czBinanceDappAddr)
 	require.NoError(err)
 	require.Equal(int64(880), balanceAfter.Int64())
+}
+
+func (ts *GatewayTestSuite) TestBinanceBEP2Gateway() {
+	require := ts.Require()
+	ownerAddr := ts.dAppAddr
+	oracleAddr := ts.dAppAddr2
+	czBinanceAddr := ts.binanceAddr
+	czBinanceDappAddr := ts.dAppAddr5
+	fakeCtx := plugin.CreateFakeContextWithEVM(oracleAddr, loom.RootAddress("chain"))
+	_, err := deployAddressMapperContract(fakeCtx)
+	require.NoError(err)
+
+	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   ownerAddr.MarshalPB(),
+		Oracles: []*types.Address{oracleAddr.MarshalPB()},
+	}, BinanceGateway)
+	require.NoError(err)
+
+	// deploy erc20 coin for MOOL token
+	dappTokenAddr, err := deployTokenContract(fakeCtx, "SampleERC20Token", gwHelper.Address, ts.dAppAddr)
+	require.NoError(err)
+
+	require.NoError(gwHelper.AddContractMapping(fakeCtx, binanceTokenAddr2, dappTokenAddr))
+
+	// depositing from binance we put Dapp
+	bep2amountsByBlock := []int64{160, 239, 581}
+	bep2deposits := genBEP2DepositsFromBinance(
+		binanceTokenAddr2,
+		czBinanceDappAddr,
+		[]uint64{71, 73, 75},
+		bep2amountsByBlock,
+	)
+
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: bep2deposits,
+	})
+
+	require.NoError(err)
+	erc20 := newERC20Context(contract.WrapPluginContext(fakeCtx.WithAddress(czBinanceDappAddr)), dappTokenAddr)
+	bal, err := erc20.balanceOf(czBinanceDappAddr)
+
+	require.NoError(err)
+	require.Equal(int64(980), bal.Int64())
+
+	resp, err := gwHelper.Contract.GetUnclaimedContractTokens(gwHelper.ContractCtx(fakeCtx), &GetUnclaimedContractTokensRequest{TokenAddress: dappTokenAddr.MarshalPB()})
+	require.NoError(err)
+	require.Equal(loom.NewBigUIntFromInt(0), &resp.UnclaimedAmount.Value)
+
+	// approve erc20 token to be transferred to gateway otherwise the test fail
+	require.NoError(erc20.approve(gwHelper.Address, big.NewInt(180)))
+	// cz withdraw MOOL coin from dAppChain Gateway
+	err = gwHelper.Contract.WithdrawToken(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
+		&WithdrawTokenRequest{
+			TokenKind:     TokenKind_BEP2,
+			TokenContract: dappTokenAddr.MarshalPB(),
+			TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(180)},
+			Recipient:     czBinanceAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 90,
+				Payload: &MainnetWithdrawalEvent{
+					Withdrawal: &MainnetTokenWithdrawn{
+						TokenKind:     TokenKind_BEP2,
+						TokenContract: dappTokenAddr.MarshalPB(),
+						TokenOwner:    czBinanceAddr.MarshalPB(),
+						TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(180)},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(err)
+
+	balanceAfter, err := erc20.balanceOf(czBinanceDappAddr)
+	require.NoError(err)
+	require.Equal(int64(800), balanceAfter.Int64())
 }

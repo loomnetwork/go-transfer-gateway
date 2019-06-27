@@ -72,6 +72,7 @@ type (
 	ListContractMappingRequest         = tgtypes.TransferGatewayListContractMappingRequest
 	ListContractMappingResponse        = tgtypes.TransferGatewayListContractMappingResponse
 	WithdrawLoomCoinRequest            = tgtypes.TransferGatewayWithdrawLoomCoinRequest
+	ResubmitWithdrawalError            = tgtypes.TransferGatewayResubmitWithdrawalError
 
 	TrustedValidatorsRequest  = tgtypes.TransferGatewayTrustedValidatorsRequest
 	TrustedValidatorsResponse = tgtypes.TransferGatewayTrustedValidatorsResponse
@@ -98,7 +99,8 @@ type (
 
 	HotWalletTxHash = tgtypes.TransferGatewayHotWalletTxHash
 
-	TxStatus = tgtypes.TransferGatewayTxStatus
+	TxStatus                  = tgtypes.TransferGatewayTxStatus
+	ResubmitWithdrawalRequest = tgtypes.TransferGatewayResubmitWithdrawalRequest
 )
 
 var (
@@ -140,20 +142,21 @@ const (
 	oracleRole = "oracle"
 
 	// Events
-	tokenWithdrawalSignedEventTopic    = "event:TokenWithdrawalSigned"
-	contractMappingConfirmedEventTopic = "event:ContractMappingConfirmed"
-	withdrawETHTopic                   = "event:WithdrawETH"
-	withdrawLoomCoinTopic              = "event:WithdrawLoomCoin"
-	withdrawTokenTopic                 = "event:WithdrawToken"
-	mainnetDepositEventTopic           = "event:MainnetDepositEvent"
-	mainnetWithdrawalEventTopic        = "event:MainnetWithdrawalEvent"
-	mainnetProcessEventErrorTopic      = "event:MainnetProcessEventError"
-	reclaimErrorTopic                  = "event:ReclaimError"
-	withdrawETHErrorTopic              = "event:WithdrawETHError"
-	withdrawLoomCoinErrorTopic         = "event:WithdrawLoomCoinError"
-	withdrawTokenErrorTopic            = "event:WithdrawTokenError"
-	storeUnclaimedTokenTopic           = "event:StoreUnclaimedToken"
-	withdrawalUpdatedEventTopic        = "event:WithdrawalUpdatedEventTopic"
+	tokenWithdrawalSignedEventTopic     = "event:TokenWithdrawalSigned"
+	contractMappingConfirmedEventTopic  = "event:ContractMappingConfirmed"
+	withdrawETHTopic                    = "event:WithdrawETH"
+	withdrawLoomCoinTopic               = "event:WithdrawLoomCoin"
+	withdrawTokenTopic                  = "event:WithdrawToken"
+	mainnetDepositEventTopic            = "event:MainnetDepositEvent"
+	mainnetWithdrawalEventTopic         = "event:MainnetWithdrawalEvent"
+	mainnetProcessEventErrorTopic       = "event:MainnetProcessEventError"
+	reclaimErrorTopic                   = "event:ReclaimError"
+	withdrawETHErrorTopic               = "event:WithdrawETHError"
+	withdrawLoomCoinErrorTopic          = "event:WithdrawLoomCoinError"
+	withdrawTokenErrorTopic             = "event:WithdrawTokenError"
+	storeUnclaimedTokenTopic            = "event:StoreUnclaimedToken"
+	withdrawalUpdatedEventTopic         = "event:WithdrawalUpdatedEventTopic"
+	resubmitBinanceWithdrawalErrorTopic = "event:ResubmitBinanceWithdrawalError"
 
 	TokenKind_ERC721X      = tgtypes.TransferGatewayTokenKind_ERC721X
 	TokenKind_ERC721       = tgtypes.TransferGatewayTokenKind_ERC721
@@ -162,6 +165,7 @@ const (
 	TokenKind_TRX          = tgtypes.TransferGatewayTokenKind_TRX
 	TokenKind_TRC20        = tgtypes.TransferGatewayTokenKind_TRC20
 	TokenKind_BNBLoomToken = tgtypes.TransferGatewayTokenKind_BNBLoomToken
+	TokenKind_BEP2         = tgtypes.TransferGatewayTokenKind_BEP2
 
 	TokenKind_LoomCoin = tgtypes.TransferGatewayTokenKind_LOOMCOIN
 
@@ -706,6 +710,16 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 				return ErrInvalidRequest
 			}
 		}
+	case TokenKind_BEP2:
+		if !isTokenKindAllowed(gw.Type, req.TokenKind) {
+			return ErrInvalidRequest
+		}
+		if req.TokenAmount == nil {
+			return ErrInvalidRequest
+		}
+		if req.TokenAmount.Value.Cmp(loom.NewBigUIntFromInt(0)) == 0 {
+			return ErrInvalidRequest
+		}
 	default:
 		return ErrInvalidRequest
 	}
@@ -787,7 +801,7 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 		}
 		ctx.Logger().Info("WithdrawERC721X", "owner", ownerEthAddr, "token", tokenEthAddr)
 
-	case TokenKind_ERC20, TokenKind_TRC20, TokenKind_TRX:
+	case TokenKind_ERC20, TokenKind_TRC20, TokenKind_TRX, TokenKind_BEP2:
 		erc20 := newERC20Context(ctx, tokenAddr)
 		if err := erc20.transferFrom(ownerAddr, ctx.ContractAddress(), tokenAmount); err != nil {
 			emitWithdrawTokenError(ctx, err.Error(), req)
@@ -1528,10 +1542,6 @@ func (gw *Gateway) PendingWithdrawals(ctx contract.StaticContext, req *PendingWi
 
 // GetWithdrawalsWithStatus will return the witdrawal summary filtered with TxStatus
 func (gw *Gateway) GetWithdrawalsWithStatus(ctx contract.StaticContext, req *PendingWithdrawalsRequest) (*PendingWithdrawalsResponse, error) {
-	if req.MainnetGateway == nil {
-		return nil, ErrInvalidRequest
-	}
-
 	summaries, err := filterWithdrawalsByTxStatus(ctx, req.TxStatus)
 	if err != nil {
 		return nil, err
@@ -1627,7 +1637,7 @@ func (gw *Gateway) GetUnclaimedContractTokens(
 				unclaimedAmount = unclaimedAmount.Add(unclaimedAmount, loom.NewBigUInt(a.TokenAmount.Value.Int))
 
 			}
-		case TokenKind_ERC20, TokenKind_ETH, TokenKind_LoomCoin, TokenKind_BNBLoomToken:
+		case TokenKind_ERC20, TokenKind_ETH, TokenKind_LoomCoin, TokenKind_BNBLoomToken, TokenKind_BEP2:
 			if len(unclaimedToken.Amounts) == 1 {
 				amount = loom.NewBigUInt(unclaimedToken.Amounts[0].TokenAmount.Value.Int)
 			}
@@ -1785,7 +1795,7 @@ func validateTokenDeposit(deposit *MainnetTokenDeposited) error {
 	switch deposit.TokenKind {
 	case TokenKind_ERC721:
 		// assume TokenID == nil means TokenID == 0
-	case TokenKind_ERC721X, TokenKind_ERC20, TokenKind_ETH, TokenKind_LoomCoin, TokenKind_TRX, TokenKind_TRC20, TokenKind_BNBLoomToken:
+	case TokenKind_ERC721X, TokenKind_ERC20, TokenKind_ETH, TokenKind_LoomCoin, TokenKind_TRX, TokenKind_TRC20, TokenKind_BNBLoomToken, TokenKind_BEP2:
 		if deposit.TokenAmount == nil {
 			return ErrInvalidRequest
 		}
@@ -1807,7 +1817,7 @@ func transferTokenDeposit(
 	}
 
 	var ownerAddr loom.Address
-	if kind == TokenKind_BNBLoomToken {
+	if kind == TokenKind_BNBLoomToken || kind == TokenKind_BEP2 {
 		ownerAddr = ownerEthAddr
 	} else {
 		ownerAddr, err = resolveToDAppAddr(ctx, mapperAddr, ownerEthAddr)
@@ -1873,7 +1883,7 @@ func transferTokenDeposit(
 			return errors.Wrapf(err, "failed to transfer ERC721X token")
 		}
 
-	case TokenKind_ERC20, TokenKind_TRC20, TokenKind_TRX:
+	case TokenKind_ERC20, TokenKind_TRC20, TokenKind_TRX, TokenKind_BEP2:
 		// TRC20 and TRX are also others ERC20s compatible
 		erc20 := newERC20Context(ctx, tokenAddr)
 		availableFunds, err := erc20.balanceOf(ctx.ContractAddress())
@@ -1937,6 +1947,8 @@ func storeUnclaimedToken(ctx contract.Context, deposit *MainnetTokenDeposited) e
 	switch deposit.TokenKind {
 	case TokenKind_TRC20, TokenKind_TRX:
 		tokenAddr = loom.RootAddress("tron")
+	case TokenKind_BEP2:
+		tokenAddr = loom.RootAddress("binance")
 	default:
 		tokenAddr = loom.RootAddress("eth")
 	}
@@ -1980,7 +1992,7 @@ func storeUnclaimedToken(ctx contract.Context, deposit *MainnetTokenDeposited) e
 			})
 		}
 
-	case TokenKind_ERC20, TokenKind_ETH, TokenKind_LoomCoin, TokenKind_TRX, TokenKind_TRC20:
+	case TokenKind_ERC20, TokenKind_ETH, TokenKind_LoomCoin, TokenKind_TRX, TokenKind_TRC20, TokenKind_BEP2:
 		// store a single total amount
 		oldAmount := big.NewInt(0)
 		if len(unclaimedToken.Amounts) == 1 {
@@ -2026,7 +2038,7 @@ func completeTokenWithdraw(ctx contract.Context, state *GatewayState, withdrawal
 	switch withdrawal.TokenKind {
 	case TokenKind_ERC721:
 		// assume TokenID == nil means TokenID == 0
-	case TokenKind_ERC721X, TokenKind_ERC20, TokenKind_ETH, TokenKind_LoomCoin, TokenKind_TRX, TokenKind_TRC20, TokenKind_BNBLoomToken:
+	case TokenKind_ERC721X, TokenKind_ERC20, TokenKind_ETH, TokenKind_LoomCoin, TokenKind_TRX, TokenKind_TRC20, TokenKind_BNBLoomToken, TokenKind_BEP2:
 		if withdrawal.TokenAmount == nil {
 			return ErrInvalidRequest
 		}
@@ -2355,6 +2367,18 @@ func emitWithdrawLoomCoinError(ctx contract.Context, errorMessage string, reques
 	return nil
 }
 
+func emitResubmitWithdrawalError(ctx contract.Context, errorMessage string, receipt *tgtypes.TransferGatewayWithdrawalReceipt) error {
+	resubmitBinanceWithdrawalError, err := proto.Marshal(&ResubmitWithdrawalError{
+		WithdrawalReceipt: receipt,
+		ErrorMessage:      errorMessage,
+	})
+	if err != nil {
+		return err
+	}
+	ctx.EmitTopics(resubmitBinanceWithdrawalError, resubmitBinanceWithdrawalErrorTopic)
+	return nil
+}
+
 func getMappedEthAddress(ctx contract.StaticContext, trustedValidators []*types.Address) ([]common.Address, error) {
 	validatorEthAddresses := make([]common.Address, len(trustedValidators))
 
@@ -2456,7 +2480,7 @@ func isTokenKindAllowed(gwType GatewayType, tokenKind TokenKind) bool {
 		}
 	case BinanceGateway:
 		switch tokenKind {
-		case TokenKind_LoomCoin, TokenKind_BNBLoomToken:
+		case TokenKind_BNBLoomToken, TokenKind_BEP2:
 			return true
 		default:
 			return false
@@ -2492,19 +2516,6 @@ func (gw *Gateway) UpdateWithdrawalReceipt(ctx contract.Context, req *ConfirmWit
 
 	localAccount.WithdrawalReceipt.TxHash = req.WithdrawalHash
 	localAccount.WithdrawalReceipt.TxStatus = req.WithdrawalStatus
-
-	// if tx is rejected, remove tx hash and change status to pending so that
-	// the oracle can retry submitting the tx on the next batch.
-	if localAccount.WithdrawalReceipt.TxStatus == tgtypes.TransferGatewayTxStatus_REJECTED {
-		msg := fmt.Sprintf("[TransferGateway] updating withdrawal status from REJECTED to PENDING")
-		ctx.Logger().Info(msg,
-			"txHash", common.Bytes2Hex(localAccount.WithdrawalReceipt.TxHash),
-			"owner", localAccount.WithdrawalReceipt.TokenOwner,
-			"status", localAccount.WithdrawalReceipt.TxStatus,
-		)
-		localAccount.WithdrawalReceipt.TxStatus = tgtypes.TransferGatewayTxStatus_PENDING
-		localAccount.WithdrawalReceipt.TxHash = nil
-	}
 
 	if err := saveLocalAccount(ctx, localAccount); err != nil {
 		return err
@@ -2558,4 +2569,49 @@ func filterWithdrawalsByTxStatus(ctx contract.StaticContext, status TxStatus) ([
 	}
 
 	return summaries, nil
+}
+
+func (gw *Gateway) ResubmitWithdrawal(ctx contract.Context, req *ResubmitWithdrawalRequest) error {
+	if gw.Type != BinanceGateway {
+		return ErrInvalidRequest
+	}
+
+	ownerAddr := ctx.Message().Sender
+	account, err := loadLocalAccount(ctx, ownerAddr)
+	if err != nil {
+		receipt := &tgtypes.TransferGatewayWithdrawalReceipt{}
+		emitResubmitWithdrawalError(ctx, err.Error(), receipt)
+		return err
+	}
+
+	if account.WithdrawalReceipt == nil {
+		return ErrNoPendingWithdrawalExists
+	}
+
+	withdrawStatus := account.WithdrawalReceipt.TxStatus
+	if withdrawStatus != TxStatusRejected {
+		return ErrNoPendingWithdrawalExists
+	}
+	// change withdrawalReceiptStatus to Pending
+	account.WithdrawalReceipt.TxStatus = TxStatusPending
+
+	if err := saveLocalAccount(ctx, account); err != nil {
+		emitResubmitWithdrawalError(ctx, err.Error(), account.WithdrawalReceipt)
+		return err
+	}
+
+	wr := account.WithdrawalReceipt
+	payload, err := proto.Marshal(&PendingWithdrawalSummary{
+		TokenOwner:      wr.TokenOwner,
+		TokenAmount:     wr.TokenAmount,
+		TokenWithdrawer: wr.TokenWithdrawer,
+		TxHash:          wr.TxHash,
+		TxStatus:        wr.TxStatus,
+	})
+	if err != nil {
+		return err
+	}
+
+	ctx.EmitTopics(payload, withdrawalUpdatedEventTopic)
+	return nil
 }
