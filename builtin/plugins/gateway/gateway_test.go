@@ -2516,7 +2516,7 @@ func (ts *GatewayTestSuite) TestBinanceBEP2Gateway() {
 		TransferFee: transferFee,
 	}
 
-	err = gwHelper.Contract.UpdateBinanceTransferFee(gwHelper.ContractCtx(fakeCtx.WithSender(ownerAddr)), req)
+	err = gwHelper.Contract.SetTransferFee(gwHelper.ContractCtx(fakeCtx.WithSender(ownerAddr)), req)
 	require.NoError(err)
 
 	// deploy erc20 coin for MOOL token
@@ -2632,7 +2632,7 @@ func (ts *GatewayTestSuite) TestBinanceBNBTokenBEP2Gateway() {
 		TransferFee: transferFee,
 	}
 
-	err = gwHelper.Contract.UpdateBinanceTransferFee(gwHelper.ContractCtx(fakeCtx.WithSender(ownerAddr)), req)
+	err = gwHelper.Contract.SetTransferFee(gwHelper.ContractCtx(fakeCtx.WithSender(ownerAddr)), req)
 	require.NoError(err)
 
 	// deploy erc20 coin for sampleBNBToken

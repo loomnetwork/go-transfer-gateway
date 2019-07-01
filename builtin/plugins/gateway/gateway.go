@@ -814,14 +814,9 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 		ctx.Logger().Info("WithdrawToken", "kind", req.TokenKind, "owner", ownerEthAddr, "token", tokenEthAddr)
 
 	case TokenKind_BEP2:
-		// For withdraw to Binance dex oracle is the one who send tokens to withdrawer, so we're charging transfer fee from
-		// The idea is we will deducted X amount of BNB token as a fee no matter what kinds of tokens they want to withdraw.
-		// We will check if they have sufficient token amount withdrawers want to withdraw and X amount of BNB token as a fee.
-		// If Withdrawers want to withdraw BNB token we will check if amount + fee is sufficient to withdraw before proceeding further.
-		// Only gateway owner can adjust the fee.
 		state, err := loadState(ctx)
 		if err != nil {
-			emitWithdrawTokenError(ctx, errors.New("Fail to load binance transfer fee").Error(), req)
+			emitWithdrawTokenError(ctx, "failed to load transfer fee", req)
 			return err
 		}
 
@@ -830,62 +825,18 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 			fee = state.TransferFee.Value.Int
 		}
 
-		bnbLocalAddr, err := resolveToLocalContractAddr(ctx, BNBTokenAddr)
-		if err != nil {
-			return err
-		}
-		erc20bnb := newERC20Context(ctx, bnbLocalAddr)
-		erc20 := newERC20Context(ctx, tokenAddr)
-
-		ownerBNBBalance, err := erc20bnb.balanceOf(ownerAddr)
-		if err != nil {
+		if err := transferBEP2WithFee(ctx, tokenAddr, ownerAddr, tokenAmount, fee); err != nil {
 			emitWithdrawTokenError(ctx, err.Error(), req)
 			return err
 		}
-
-		if ownerBNBBalance.Cmp(fee) < 0 {
-			emitWithdrawTokenError(ctx, errors.New("Insufficient BNB balance").Error(), req)
-			return err
-		}
-
-		ownerERC20Balance, err := erc20.balanceOf(ownerAddr)
-		if err != nil {
-			emitWithdrawTokenError(ctx, err.Error(), req)
-			return err
-		}
-
-		if ownerERC20Balance.Cmp(tokenAmount) < 0 {
-			err := errors.Errorf("Insufficient %s balance", tokenAmount)
-			emitWithdrawTokenError(ctx, err.Error(), req)
-			return err
-		}
-
-		if tokenAddr.Compare(bnbLocalAddr) == 0 {
-			ownerBNBBalance, err := erc20bnb.balanceOf(ownerAddr)
-			if err != nil {
-				emitWithdrawTokenError(ctx, err.Error(), req)
-				return err
-			}
-
-			totalAmount := big.NewInt(0).Add(tokenAmount, fee)
-			if ownerBNBBalance.Cmp(totalAmount) < 0 {
-				err := errors.New("Insufficient dappchain BNB balance")
-				emitWithdrawTokenError(ctx, err.Error(), req)
-				return err
-			}
-		}
-
-		if err := erc20bnb.transferFrom(ownerAddr, ctx.ContractAddress(), fee); err != nil {
-			emitWithdrawTokenError(ctx, err.Error(), req)
-			return err
-		}
-
-		if err := erc20.transferFrom(ownerAddr, ctx.ContractAddress(), tokenAmount); err != nil {
-			emitWithdrawTokenError(ctx, err.Error(), req)
-			return err
-		}
-
-		ctx.Logger().Info("WithdrawToken", "kind", req.TokenKind, "owner", ownerEthAddr, "token", tokenEthAddr, "tokenAmount", tokenAmount, "fee", fee)
+		ctx.Logger().Info(
+			"WithdrawToken",
+			"kind", req.TokenKind,
+			"owner", ownerEthAddr,
+			"token", tokenEthAddr,
+			"amount", tokenAmount,
+			"fee", fee,
+		)
 	}
 
 	account.WithdrawalReceipt = &WithdrawalReceipt{
@@ -930,6 +881,68 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 	}
 
 	return saveState(ctx, state)
+}
+
+// This function transfers tokens from the given DAppChain account to the DAppChain Binance gateway.
+// Withdrawals from the DAppChain Binance gateway require the TG Oracle to transfer tokens on the
+// Binance Chain, this incurs a fee, which we pass on to the withdrawer.
+//
+// Fees are charged in BNB regardless of which token is actually being withdrawn, so to successfully
+// transfer some amount of tokens the withdrawer must have a sufficient balance of those tokens,
+// as well as enough BNB on the DAppChain to pay for the withdrawal fee.
+func transferBEP2WithFee(ctx contract.Context, tokenAddr, ownerAddr loom.Address, amount, fee *big.Int) error {
+	bnbLocalAddr, err := resolveToLocalContractAddr(ctx, BNBTokenAddr)
+	if err != nil {
+		return err
+	}
+
+	erc20bnb := newERC20Context(ctx, bnbLocalAddr)
+	ownerBNBBalance, err := erc20bnb.balanceOf(ownerAddr)
+	if err != nil {
+		return errors.Wrap(err, "failed to retrieve BNB balance")
+	}
+
+	if tokenAddr.Compare(bnbLocalAddr) == 0 {
+		totalAmount := big.NewInt(0).Add(amount, fee)
+		if ownerBNBBalance.Cmp(totalAmount) < 0 {
+			return errors.New("insufficient BNB balance")
+		}
+
+		if err := erc20bnb.transferFrom(ownerAddr, ctx.ContractAddress(), fee); err != nil {
+			return errors.Wrap(err, "failed to transfer fee")
+		}
+
+		if err := erc20bnb.transferFrom(ownerAddr, ctx.ContractAddress(), amount); err != nil {
+			return errors.Wrap(err, "failed to transfer tokens")
+		}
+
+		return nil
+	}
+
+	// Withdrawing something other than BNB, so just need enough BNB for the fee
+	if ownerBNBBalance.Cmp(fee) < 0 {
+		return errors.New("insufficient BNB balance for transfer fee")
+	}
+
+	erc20 := newERC20Context(ctx, tokenAddr)
+	ownerERC20Balance, err := erc20.balanceOf(ownerAddr)
+	if err != nil {
+		return errors.Wrap(err, "failed to retrieve token balance")
+	}
+
+	if ownerERC20Balance.Cmp(amount) < 0 {
+		return errors.Errorf("insufficient token balance %s", amount.String())
+	}
+
+	if err := erc20bnb.transferFrom(ownerAddr, ctx.ContractAddress(), fee); err != nil {
+		return errors.Wrap(err, "failed to transfer fee")
+	}
+
+	if err := erc20.transferFrom(ownerAddr, ctx.ContractAddress(), amount); err != nil {
+		return errors.Wrap(err, "failed to transfer tokens")
+	}
+
+	return nil
 }
 
 // WithdrawETH will attempt to transfer ETH to the Gateway contract,
@@ -2577,6 +2590,9 @@ func isTokenKindAllowed(gwType GatewayType, tokenKind TokenKind) bool {
 	return false
 }
 
+// UpdateWithdrawalReceipt updates the status of a pending withdrawal from the Binance gateway.
+// The status of a pending withdrawal can either change to confirmed or rejected. This function
+// can only be called by the TG Oracle.
 func (gw *Gateway) UpdateWithdrawalReceipt(ctx contract.Context, req *ConfirmWithdrawalReceiptRequest) error {
 	if req.TokenOwner == nil {
 		return ErrInvalidRequest
@@ -2602,6 +2618,10 @@ func (gw *Gateway) UpdateWithdrawalReceipt(ctx contract.Context, req *ConfirmWit
 		return ErrMissingWithdrawalReceipt
 	}
 
+	// TODO: shouldn't allow invalid tx status updates like:
+	//       - confirmed -> rejected
+	//       - rejected -> confirmed
+	//       shouldn't allow len(req.WithdrawalHash) = 0 if tx status changed to confirmed
 	localAccount.WithdrawalReceipt.TxHash = req.WithdrawalHash
 	localAccount.WithdrawalReceipt.TxStatus = req.WithdrawalStatus
 
@@ -2660,6 +2680,8 @@ func filterWithdrawalsByTxStatus(ctx contract.StaticContext, status TxStatus) ([
 	return summaries, nil
 }
 
+// ResubmitWithdrawal resubmits a previously rejected token withdrawal, this is currently only
+// supported by the Binance gateway. Only the original withdrawer can resubmit a reject withdrawal.
 func (gw *Gateway) ResubmitWithdrawal(ctx contract.Context, req *ResubmitWithdrawalRequest) error {
 	if gw.Type != BinanceGateway {
 		return ErrInvalidRequest
@@ -2705,31 +2727,18 @@ func (gw *Gateway) ResubmitWithdrawal(ctx contract.Context, req *ResubmitWithdra
 	return nil
 }
 
-func (gw *Gateway) UpdateBinanceTransferFee(ctx contract.Context, req *UpdateBinanceTransferFeeRequest) error {
-	ok := isOwner(ctx)
-	if !ok {
-		return errors.Errorf("Message sender is not a gateway owner")
-	}
+// SetTransferFee sets the fee that should be charged by the gateway per withdrawal.
+func (gw *Gateway) SetTransferFee(ctx contract.Context, req *UpdateBinanceTransferFeeRequest) error {
 	state, err := loadState(ctx)
 	if err != nil {
 		return err
 	}
+
+	if ctx.Message().Sender.Compare(loom.UnmarshalAddressPB(state.Owner)) != 0 {
+		return ErrNotAuthorized
+	}
+
 	state.TransferFee = req.TransferFee
+
 	return saveState(ctx, state)
-}
-
-func isOwner(ctx contract.Context) bool {
-	state, err := loadState(ctx)
-	if err != nil {
-		return false
-	}
-
-	ownerAddr := loom.UnmarshalAddressPB(state.Owner)
-	sender := ctx.Message().Sender
-
-	if ownerAddr.Compare(sender) == 0 {
-		return true
-	}
-
-	return false
 }
