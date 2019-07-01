@@ -47,6 +47,7 @@ var (
 
 	binanceTokenAddr  = loom.MustParseAddress("binance:0xb16a379ec18d4093666f8f38b11a3071c920207d")
 	binanceTokenAddr2 = loom.MustParseAddress("binance:0x0000000000000000000000004d4f4f4c2d434243")
+	binanceBNBAddr    = loom.MustParseAddress("binance:0x0000000000000000000000000000000000424e42")
 )
 
 const (
@@ -2503,17 +2504,30 @@ func (ts *GatewayTestSuite) TestBinanceBEP2Gateway() {
 	_, err := deployAddressMapperContract(fakeCtx)
 	require.NoError(err)
 
+	transferFee := &types.BigUInt{Value: *loom.NewBigUIntFromInt(37500)}
+
 	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
 		Owner:   ownerAddr.MarshalPB(),
 		Oracles: []*types.Address{oracleAddr.MarshalPB()},
 	}, BinanceGateway)
 	require.NoError(err)
 
-	// deploy erc20 coin for MOOL token
-	dappTokenAddr, err := deployTokenContract(fakeCtx, "SampleERC20Token", gwHelper.Address, ts.dAppAddr)
+	req := &UpdateBinanceTransferFeeRequest{
+		TransferFee: transferFee,
+	}
+
+	err = gwHelper.Contract.UpdateBinanceTransferFee(gwHelper.ContractCtx(fakeCtx.WithSender(ownerAddr)), req)
 	require.NoError(err)
 
+	// deploy erc20 coin for MOOL token
+	dappTokenAddr, err := deployTokenContract(fakeCtx, "SampleBEP2Token", gwHelper.Address, ts.dAppAddr)
+	require.NoError(err)
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, binanceTokenAddr2, dappTokenAddr))
+
+	// deploy erc20 coin for sampleBNBToken
+	dappTokenAddr2, err := deployTokenContract(fakeCtx, "SampleBNBToken", gwHelper.Address, ts.dAppAddr2)
+	require.NoError(err)
+	require.NoError(gwHelper.AddContractMapping(fakeCtx, binanceBNBAddr, dappTokenAddr2))
 
 	// depositing from binance we put Dapp
 	bep2amountsByBlock := []int64{160, 239, 581}
@@ -2527,6 +2541,20 @@ func (ts *GatewayTestSuite) TestBinanceBEP2Gateway() {
 	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
 		Events: bep2deposits,
 	})
+	require.NoError(err)
+
+	// depositing BNB from binance
+	bep2BNBamountsByBlock := []int64{37500}
+	bep2BNBdeposits := genBEP2DepositsFromBinance(
+		binanceBNBAddr,
+		czBinanceDappAddr,
+		[]uint64{78},
+		bep2BNBamountsByBlock,
+	)
+
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: bep2BNBdeposits,
+	})
 
 	require.NoError(err)
 	erc20 := newERC20Context(contract.WrapPluginContext(fakeCtx.WithAddress(czBinanceDappAddr)), dappTokenAddr)
@@ -2535,12 +2563,19 @@ func (ts *GatewayTestSuite) TestBinanceBEP2Gateway() {
 	require.NoError(err)
 	require.Equal(int64(980), bal.Int64())
 
+	erc20bnb := newERC20Context(contract.WrapPluginContext(fakeCtx.WithAddress(czBinanceDappAddr)), dappTokenAddr2)
+	balbnb, err := erc20bnb.balanceOf(czBinanceDappAddr)
+
+	require.NoError(err)
+	require.Equal(int64(37500), balbnb.Int64())
+
 	resp, err := gwHelper.Contract.GetUnclaimedContractTokens(gwHelper.ContractCtx(fakeCtx), &GetUnclaimedContractTokensRequest{TokenAddress: dappTokenAddr.MarshalPB()})
 	require.NoError(err)
 	require.Equal(loom.NewBigUIntFromInt(0), &resp.UnclaimedAmount.Value)
 
 	// approve erc20 token to be transferred to gateway otherwise the test fail
 	require.NoError(erc20.approve(gwHelper.Address, big.NewInt(180)))
+	require.NoError(erc20bnb.approve(gwHelper.Address, big.NewInt(37500)))
 	// cz withdraw MOOL coin from dAppChain Gateway
 	err = gwHelper.Contract.WithdrawToken(
 		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
@@ -2573,4 +2608,131 @@ func (ts *GatewayTestSuite) TestBinanceBEP2Gateway() {
 	balanceAfter, err := erc20.balanceOf(czBinanceDappAddr)
 	require.NoError(err)
 	require.Equal(int64(800), balanceAfter.Int64())
+}
+
+func (ts *GatewayTestSuite) TestBinanceBNBTokenBEP2Gateway() {
+	require := ts.Require()
+	ownerAddr := ts.dAppAddr
+	oracleAddr := ts.dAppAddr2
+	czBinanceAddr := ts.binanceAddr
+	czBinanceDappAddr := ts.dAppAddr5
+	fakeCtx := plugin.CreateFakeContextWithEVM(oracleAddr, loom.RootAddress("chain"))
+	_, err := deployAddressMapperContract(fakeCtx)
+	require.NoError(err)
+
+	transferFee := &types.BigUInt{Value: *loom.NewBigUIntFromInt(37500)}
+
+	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   ownerAddr.MarshalPB(),
+		Oracles: []*types.Address{oracleAddr.MarshalPB()},
+	}, BinanceGateway)
+	require.NoError(err)
+
+	req := &UpdateBinanceTransferFeeRequest{
+		TransferFee: transferFee,
+	}
+
+	err = gwHelper.Contract.UpdateBinanceTransferFee(gwHelper.ContractCtx(fakeCtx.WithSender(ownerAddr)), req)
+	require.NoError(err)
+
+	// deploy erc20 coin for sampleBNBToken
+	dappTokenAddr, err := deployTokenContract(fakeCtx, "SampleBNBToken", gwHelper.Address, ts.dAppAddr2)
+	require.NoError(err)
+	require.NoError(gwHelper.AddContractMapping(fakeCtx, binanceBNBAddr, dappTokenAddr))
+
+	// depositing BNB from binance
+	bep2BNBamountsByBlock := []int64{100000000}
+	bep2BNBdeposits := genBEP2DepositsFromBinance(
+		binanceBNBAddr,
+		czBinanceDappAddr,
+		[]uint64{78},
+		bep2BNBamountsByBlock,
+	)
+
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: bep2BNBdeposits,
+	})
+
+	erc20bnb := newERC20Context(contract.WrapPluginContext(fakeCtx.WithAddress(czBinanceDappAddr)), dappTokenAddr)
+	balbnb, err := erc20bnb.balanceOf(czBinanceDappAddr)
+
+	require.NoError(err)
+	require.Equal(int64(100000000), balbnb.Int64())
+
+	// approve erc20 token to be transferred to gateway otherwise the test fail
+	require.NoError(erc20bnb.approve(gwHelper.Address, big.NewInt(100000000)))
+
+	// cz withdraw BNB coin from dAppChain Gateway
+	err = gwHelper.Contract.WithdrawToken(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
+		&WithdrawTokenRequest{
+			TokenKind:     TokenKind_BEP2,
+			TokenContract: dappTokenAddr.MarshalPB(),
+			TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(9962500)},
+			Recipient:     czBinanceAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+
+	// Oracle calls gateway to process the event
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 90,
+				Payload: &MainnetWithdrawalEvent{
+					Withdrawal: &MainnetTokenWithdrawn{
+						TokenKind:     TokenKind_BEP2,
+						TokenContract: binanceBNBAddr.MarshalPB(),
+						TokenOwner:    czBinanceAddr.MarshalPB(),
+						TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(9962500)},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(err)
+
+	balanceAfter, err := erc20bnb.balanceOf(czBinanceDappAddr)
+	require.NoError(err)
+	// remaining_balance = total_balance - (transfer_amount + fee)
+	// 90000000          = 100000000     - (    9962500     + 37500)
+	require.Equal(int64(90000000), balanceAfter.Int64())
+
+	// Fail case: Insufficient fund
+	// approve erc20 token to be transferred to gateway otherwise the test fail
+	require.NoError(erc20bnb.approve(gwHelper.Address, big.NewInt(100000000)))
+
+	// cz withdraw BNB coin from dAppChain Gateway
+
+	err = gwHelper.Contract.WithdrawToken(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
+		&WithdrawTokenRequest{
+			TokenKind:     TokenKind_BEP2,
+			TokenContract: dappTokenAddr.MarshalPB(),
+			TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(100000000)},
+			Recipient:     czBinanceAddr.MarshalPB(),
+		},
+	)
+	require.Error(err, "this should return `Insufficient dappchain binance:0x0000000000000000000000000000000000424E42 balance`")
+
+	require.Error(gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 90,
+				Payload: &MainnetWithdrawalEvent{
+					Withdrawal: &MainnetTokenWithdrawn{
+						TokenKind:     TokenKind_BEP2,
+						TokenContract: binanceBNBAddr.MarshalPB(),
+						TokenOwner:    czBinanceAddr.MarshalPB(),
+						TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(100000000)},
+					},
+				},
+			},
+		},
+	}), "this process event batch should have no pending withdrawal thus return nil")
+
+	balanceAfter, err = erc20bnb.balanceOf(czBinanceDappAddr)
+	require.NoError(err)
+	require.Equal(int64(90000000), balanceAfter.Int64())
+
 }

@@ -99,8 +99,9 @@ type (
 
 	HotWalletTxHash = tgtypes.TransferGatewayHotWalletTxHash
 
-	TxStatus                  = tgtypes.TransferGatewayTxStatus
-	ResubmitWithdrawalRequest = tgtypes.TransferGatewayResubmitWithdrawalRequest
+	TxStatus                        = tgtypes.TransferGatewayTxStatus
+	ResubmitWithdrawalRequest       = tgtypes.TransferGatewayResubmitWithdrawalRequest
+	UpdateBinanceTransferFeeRequest = tgtypes.TransferGatewayUpdateBinanceTransferFeeRequest
 )
 
 var (
@@ -133,7 +134,7 @@ var (
 
 	// Tron's TRX fake fixed address to map to dApp's contract
 	TRXTokenAddr = loom.MustParseAddress("tron:0x0000000000000000000000000000000000000001")
-	BNBTokenAddr = loom.MustParseAddress("binance:0x0000000000000000000000000000000000000001")
+	BNBTokenAddr = loom.MustParseAddress("binance:0x0000000000000000000000000000000000424e42")
 )
 
 const (
@@ -720,6 +721,9 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 		if req.TokenAmount.Value.Cmp(loom.NewBigUIntFromInt(0)) == 0 {
 			return ErrInvalidRequest
 		}
+		if req.Recipient == nil {
+			return ErrInvalidRequest
+		}
 	default:
 		return ErrInvalidRequest
 	}
@@ -801,13 +805,87 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 		}
 		ctx.Logger().Info("WithdrawERC721X", "owner", ownerEthAddr, "token", tokenEthAddr)
 
-	case TokenKind_ERC20, TokenKind_TRC20, TokenKind_TRX, TokenKind_BEP2:
+	case TokenKind_ERC20, TokenKind_TRC20, TokenKind_TRX:
 		erc20 := newERC20Context(ctx, tokenAddr)
 		if err := erc20.transferFrom(ownerAddr, ctx.ContractAddress(), tokenAmount); err != nil {
 			emitWithdrawTokenError(ctx, err.Error(), req)
 			return err
 		}
 		ctx.Logger().Info("WithdrawToken", "kind", req.TokenKind, "owner", ownerEthAddr, "token", tokenEthAddr)
+
+	case TokenKind_BEP2:
+		// For withdraw to Binance dex oracle is the one who send tokens to withdrawer, so we're charging transfer fee from
+		// The idea is we will deducted X amount of BNB token as a fee no matter what kinds of tokens they want to withdraw.
+		// We will check if they have sufficient token amount withdrawers want to withdraw and X amount of BNB token as a fee.
+		// If Withdrawers want to withdraw BNB token we will check if amount + fee is sufficient to withdraw before proceeding further.
+		// Only gateway owner can adjust the fee.
+		state, err := loadState(ctx)
+		if err != nil {
+			emitWithdrawTokenError(ctx, errors.New("Fail to load binance transfer fee").Error(), req)
+			return err
+		}
+
+		fee := big.NewInt(0)
+		if state.TransferFee != nil {
+			fee = state.TransferFee.Value.Int
+		}
+
+		bnbLocalAddr, err := resolveToLocalContractAddr(ctx, BNBTokenAddr)
+		if err != nil {
+			return err
+		}
+		erc20bnb := newERC20Context(ctx, bnbLocalAddr)
+		erc20 := newERC20Context(ctx, tokenAddr)
+
+		ownerBNBBalance, err := erc20bnb.balanceOf(ownerAddr)
+		if err != nil {
+			emitWithdrawTokenError(ctx, err.Error(), req)
+			return err
+		}
+
+		if ownerBNBBalance.Cmp(fee) < 0 {
+			emitWithdrawTokenError(ctx, errors.New("Insufficient BNB balance").Error(), req)
+			return err
+		}
+
+		ownerERC20Balance, err := erc20.balanceOf(ownerAddr)
+		if err != nil {
+			emitWithdrawTokenError(ctx, err.Error(), req)
+			return err
+		}
+
+		if ownerERC20Balance.Cmp(tokenAmount) < 0 {
+			err := errors.Errorf("Insufficient %s balance", tokenAmount)
+			emitWithdrawTokenError(ctx, err.Error(), req)
+			return err
+		}
+
+		if tokenAddr.Compare(bnbLocalAddr) == 0 {
+			ownerBNBBalance, err := erc20bnb.balanceOf(ownerAddr)
+			if err != nil {
+				emitWithdrawTokenError(ctx, err.Error(), req)
+				return err
+			}
+
+			totalAmount := big.NewInt(0).Add(tokenAmount, fee)
+			if ownerBNBBalance.Cmp(totalAmount) < 0 {
+				err := errors.New("Insufficient dappchain BNB balance")
+				emitWithdrawTokenError(ctx, err.Error(), req)
+				return err
+			}
+		}
+
+		if err := erc20bnb.transferFrom(ownerAddr, ctx.ContractAddress(), fee); err != nil {
+			emitWithdrawTokenError(ctx, err.Error(), req)
+			return err
+		}
+
+		if err := erc20.transferFrom(ownerAddr, ctx.ContractAddress(), tokenAmount); err != nil {
+			emitWithdrawTokenError(ctx, err.Error(), req)
+			return err
+		}
+
+		ctx.Logger().Info("WithdrawToken", "kind", req.TokenKind, "owner", ownerEthAddr, "token", tokenEthAddr, "tokenAmount", tokenAmount, "fee", fee)
 	}
 
 	account.WithdrawalReceipt = &WithdrawalReceipt{
@@ -1168,6 +1246,11 @@ func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinR
 	// Add owner adress for binance gateway in memo for tracking purposes
 	if gw.Type == BinanceGateway {
 		account.WithdrawalReceipt.TokenWithdrawer = ownerAddr.MarshalPB()
+		minimunAllowance := loom.NewBigUIntFromInt(10000000000)
+		if req.Amount.Value.Cmp(minimunAllowance) < 0 {
+			emitWithdrawLoomCoinError(ctx, errors.Errorf("Transfer amount must be at least %v", minimunAllowance).Error(), req)
+			return err
+		}
 	}
 
 	foreignAccount.CurrentWithdrawer = ownerAddr.MarshalPB()
@@ -2620,4 +2703,33 @@ func (gw *Gateway) ResubmitWithdrawal(ctx contract.Context, req *ResubmitWithdra
 
 	ctx.EmitTopics(payload, withdrawalUpdatedEventTopic)
 	return nil
+}
+
+func (gw *Gateway) UpdateBinanceTransferFee(ctx contract.Context, req *UpdateBinanceTransferFeeRequest) error {
+	ok := isOwner(ctx)
+	if !ok {
+		return errors.Errorf("Message sender is not a gateway owner")
+	}
+	state, err := loadState(ctx)
+	if err != nil {
+		return err
+	}
+	state.TransferFee = req.TransferFee
+	return saveState(ctx, state)
+}
+
+func isOwner(ctx contract.Context) bool {
+	state, err := loadState(ctx)
+	if err != nil {
+		return false
+	}
+
+	ownerAddr := loom.UnmarshalAddressPB(state.Owner)
+	sender := ctx.Message().Sender
+
+	if ownerAddr.Compare(sender) == 0 {
+		return true
+	}
+
+	return false
 }
