@@ -249,6 +249,10 @@ var (
 	ErrUnprocessedTxHashAlreadyExists = errors.New("TG015: unprocessed tx hash already exists")
 	ErrNoUnprocessedTxHashExists      = errors.New("TG016: no unprocessed tx hash exists")
 	ErrHotWalletFeatureDisabled       = errors.New("TG017: hot wallet feature is disabled")
+
+	ErrInvalidUpdateWithdrawalReceipt = errors.New("TG018: invalid update withdrawal receipt status")
+	ErrWithdrawalReceiptConfirmed     = errors.New("TG019: withdrawal receipt already confirmed")
+	ErrMissingWithdrawalHash          = errors.New("TG020: withdrawal hash is missing")
 )
 
 type GatewayType int
@@ -2618,10 +2622,18 @@ func (gw *Gateway) UpdateWithdrawalReceipt(ctx contract.Context, req *ConfirmWit
 		return ErrMissingWithdrawalReceipt
 	}
 
-	// TODO: shouldn't allow invalid tx status updates like:
-	//       - confirmed -> rejected
-	//       - rejected -> confirmed
-	//       shouldn't allow len(req.WithdrawalHash) = 0 if tx status changed to confirmed
+	if localAccount.WithdrawalReceipt.TxStatus == TxStatusConfirmed {
+		return ErrWithdrawalReceiptConfirmed
+	}
+
+	if localAccount.WithdrawalReceipt.TxStatus == TxStatusRejected && req.WithdrawalStatus == TxStatusConfirmed {
+		return ErrInvalidUpdateWithdrawalReceipt
+	}
+
+	if req.WithdrawalStatus == TxStatusConfirmed && len(req.WithdrawalHash) == 0 {
+		return ErrMissingWithdrawalHash
+	}
+
 	localAccount.WithdrawalReceipt.TxHash = req.WithdrawalHash
 	localAccount.WithdrawalReceipt.TxStatus = req.WithdrawalStatus
 
