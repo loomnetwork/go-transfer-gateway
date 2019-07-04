@@ -15,6 +15,7 @@ IAVL_DIR = $(GOPATH)/src/github.com/tendermint/iavl
 TENDERMINT_DIR = $(GOPATH)/src/github.com/tendermint/tendermint
 GO_AMINO_DIR = $(GOPATH)/src/github.com/tendermint/go-amino
 TENDERMINT_BTCD_DIR = $(GOPATH)/src/github.com/tendermint/btcd
+YUBIHSM_DIR = $(GOPATH)/src/github.com/certusone/yubihsm-go
 
 # NOTE: To build on Jenkins using a custom go-loom branch update the `deps` target below to checkout
 #       that branch, you only need to update GO_LOOM_GIT_REV if you wish to lock the build to a
@@ -27,6 +28,7 @@ ETHEREUM_GIT_REV = 1fb6138d017a4309105d91f187c126cf979c93f9
 HASHICORP_GIT_REV = f4c3476bd38585f9ec669d10ed1686abd52b9961
 LEVIGO_GIT_REV = c42d9e0ca023e2198120196f842701bb4c55d7b9
 BTCD_GIT_REV = 7d2daa5bfef28c5e282571bc06416516936115ee
+YUBIHSM_REV = 0299fd5d703d2a576125b414abbe172eaec9f65e
 # This is locked down to this particular revision because this is the last revision before the
 # google.golang.org/genproto was recompiled with a new version of protoc, which produces pb.go files
 # that don't appear to be compatible with the gogo protobuf & protoc versions we use.
@@ -101,7 +103,7 @@ deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR) $(IAVL_DIR)
 		github.com/ulule/limiter \
 		github.com/loomnetwork/mamamerkle \
 		golang.org/x/sys/cpu \
-		github.com/loomnetwork/yubihsm-go \
+		github.com/certusone/yubihsm-go \
 		github.com/gorilla/websocket \
 		github.com/phonkee/go-pubsub \
 		github.com/inconshreveable/mousetrap \
@@ -126,6 +128,7 @@ deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR) $(IAVL_DIR)
 	cd $(BTCD_DIR) && git checkout $(BTCD_GIT_REV)
 	cd $(GO_AMINO_DIR) && git checkout v0.14.0
 	cd $(TENDERMINT_BTCD_DIR) && git checkout e5840949ff4fff0c56f9b6a541e22b63581ea9df
+	cd $(YUBIHSM_DIR) && git checkout master && git pull && git checkout $(YUBIHSM_REV)
 	# fetch vendored packages
 	dep ensure -vendor-only
 
