@@ -265,12 +265,14 @@ func (orc *Oracle) updateStatus() {
 	orc.statusMutex.Lock()
 
 	orc.status.NextMainnetBlockNum = orc.startBlock
+	orc.metrics.NextMainnetBlockNum(orc.startBlock)
 	orc.status.NumMainnetEventsFetched = orc.numMainnetEventsFetched
 	orc.status.NumMainnetEventsSubmitted = orc.numMainnetEventsSubmitted
 
 	if orc.goGateway != nil {
 		orc.status.DAppChainGatewayAddress = orc.goGateway.Address.String()
 		orc.status.DAppChainGatewayLastSeen = orc.goGateway.LastResponseTime
+		orc.metrics.DAppChainGatewayLastSeen(orc.goGateway.LastResponseTime)
 	}
 
 	orc.statusMutex.Unlock()

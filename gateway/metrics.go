@@ -16,6 +16,8 @@ type Metrics struct {
 	submittedMainnetEventCount   metrics.Counter
 	signedWithdrawalCount        metrics.Counter
 	verifiedContractCreatorCount metrics.Counter
+	nextMainnetBlockNum          metrics.Gauge
+	dAppChainGatewayLastSeen     metrics.Gauge
 }
 
 func NewMetrics(subsystem string) *Metrics {
@@ -64,6 +66,20 @@ func NewMetrics(subsystem string) *Metrics {
 				Name:      "verified_contract_creator_count",
 				Help:      "Number of contract creator verifications performed.",
 			}, nil),
+		nextMainnetBlockNum: kitprometheus.NewGaugeFrom(
+			stdprometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "next_mainnet_block_num",
+				Help:      "Number of Next Mainnet Block.",
+			}, nil),
+		dAppChainGatewayLastSeen: kitprometheus.NewGaugeFrom(
+			stdprometheus.GaugeOpts{
+				Namespace: namespace,
+				Subsystem: subsystem,
+				Name:      "dapp_chain_gateway_last_seen",
+				Help:      "Timestamp when DApp Chain Gateway was Last Seen.",
+			}, nil),
 	}
 }
 
@@ -87,4 +103,10 @@ func (m *Metrics) WithdrawalsSigned(numWithdrawals int) {
 
 func (m *Metrics) ContractCreatorsVerified(numCreators int) {
 	m.verifiedContractCreatorCount.Add(float64(numCreators))
+}
+func (m *Metrics) NextMainnetBlockNum(blockNum uint64) {
+	m.nextMainnetBlockNum.Set(float64(blockNum))
+}
+func (m *Metrics) DAppChainGatewayLastSeen(lastSeen time.Time) {
+	m.dAppChainGatewayLastSeen.Set(float64(lastSeen.Unix()))
 }
