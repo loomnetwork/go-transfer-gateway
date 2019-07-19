@@ -34,7 +34,7 @@ YUBIHSM_REV = 0299fd5d703d2a576125b414abbe172eaec9f65e
 # that don't appear to be compatible with the gogo protobuf & protoc versions we use.
 # google.golang.org/genproto seems to be pulled in by the grpc package.
 GENPROTO_GIT_REV = b515fa19cec88c32f305a962f34ae60068947aea
-IAVL_GIT_REV = loomchain
+IAVL_GIT_REV = tmreal2
 TENDERMINT_GIT_REV = loomchain
 
 BUILD_DATE = `date -Iseconds`
@@ -119,6 +119,7 @@ deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR) $(IAVL_DIR)
 
 	cd $(PLUGIN_DIR) && git checkout master && git pull && git checkout $(GO_LOOM_GIT_REV)
 	cd $(LOOMCHAIN_DIR) && git checkout master && git pull && git checkout $(LOOMCHAIN_GIT_REV)
+	cd $(IAVL_DIR) && git checkout master && git pull && git checkout $(IAVL_GIT_REV)
 	cd $(GOLANG_PROTOBUF_DIR) && git checkout v1.1.0
 	cd $(GOGO_PROTOBUF_DIR) && git checkout v1.1.1
 	cd $(GRPC_DIR) && git checkout v1.20.1
