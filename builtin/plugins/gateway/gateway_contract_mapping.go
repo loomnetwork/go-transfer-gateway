@@ -287,12 +287,19 @@ func confirmContractMapping(ctx contract.Context, pendingMappingKey []byte, mapp
 	// Clear out the pending mapping regardless of whether it's successfully confirmed or not
 	ctx.Delete(pendingMappingKey)
 
+	ctx.Logger().Info("Contract mapping info",
+		"expected-contract", loom.UnmarshalAddressPB(mapping.ForeignContract),
+		"expected-creator", loom.UnmarshalAddressPB(mapping.ForeignContractCreator),
+		"actual-contract", loom.UnmarshalAddressPB(confirmation.Contract),
+		"actual-creator", loom.UnmarshalAddressPB(confirmation.Creator),
+	)
+
 	if (mapping.ForeignContractCreator.ChainId != confirmation.Creator.ChainId) ||
 		(mapping.ForeignContractCreator.Local.Compare(confirmation.Creator.Local) != 0) ||
 		(mapping.ForeignContract.ChainId != confirmation.Contract.ChainId) ||
 		(mapping.ForeignContract.Local.Compare(confirmation.Contract.Local) != 0) {
 		ctx.Logger().Debug("[Transfer Gateway] failed to verify foreign contract creator",
-			"expected-contract", mapping.ForeignContractCreator.Local,
+			"expected-contract", mapping.ForeignContract.Local,
 			"expected-creator", mapping.ForeignContractCreator.Local,
 			"actual-contract", confirmation.Contract.Local,
 			"actual-creator", confirmation.Creator.Local,

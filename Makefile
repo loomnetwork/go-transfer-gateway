@@ -11,7 +11,7 @@ SSHA3_DIR = $(GOPATH)/src/github.com/miguelmota/go-solidity-sha3
 HASHICORP_DIR = $(GOPATH)/src/github.com/hashicorp/go-plugin
 LEVIGO_DIR = $(GOPATH)/src/github.com/jmhodges/levigo
 BTCD_DIR = $(GOPATH)/src/github.com/btcsuite/btcd
-IAVL_DIR = $(GOPATH)/src/github.com/tendermint/iavl
+IAVL_DIR = $(GOPATH)/src/github.com/loomnetwork/iavl
 TENDERMINT_DIR = $(GOPATH)/src/github.com/tendermint/tendermint
 GO_AMINO_DIR = $(GOPATH)/src/github.com/tendermint/go-amino
 TENDERMINT_BTCD_DIR = $(GOPATH)/src/github.com/tendermint/btcd
@@ -72,19 +72,19 @@ tron_tgoracle:
 	go build $(GOFLAGS) -o $@ $(PKG)/cmd/$@
 
 $(PLUGIN_DIR):
-	git clone -q git@github.com:loomnetwork/go-loom.git $@
+	git clone -q https://github.com/loomnetwork/go-loom.git $@
 
 $(GO_ETHEREUM_DIR):
-	git clone -q git@github.com:loomnetwork/go-ethereum.git $@
+	git clone -q https://github.com/loomnetwork/go-ethereum.git $@
 
 $(SSHA3_DIR):
-	git clone -q git@github.com:loomnetwork/go-solidity-sha3.git $@
+	git clone -q https://github.com/loomnetwork/go-solidity-sha3.git $@
 
 $(IAVL_DIR):
-	git clone -q git@github.com:loomnetwork/iavl.git $@
+	git clone -q https://github.com/loomnetwork/iavl.git $@
 
 $(TENDERMINT_DIR):
-	git clone -q git@github.com:loomnetwork/tendermint.git $@
+	git clone -q https://github.com/loomnetwork/tendermint.git $@
 
 deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR) $(IAVL_DIR) $(TENDERMINT_DIR)
 	go get \

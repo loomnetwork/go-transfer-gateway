@@ -638,12 +638,15 @@ func (orc *Oracle) verifyContractCreators() error {
 
 	unverifiedCreators, err := orc.goGateway.UnverifiedContractCreators()
 	if err != nil {
+		orc.logger.Error("failed to get unverified creators", "err", err)
 		return err
 	}
 
 	if len(unverifiedCreators) == 0 {
 		return nil
 	}
+
+	orc.logger.Debug("unverifiedCreators", "num", len(unverifiedCreators))
 
 	verifiedCreators := make([]*VerifiedContractCreator, 0, len(unverifiedCreators))
 	for _, unverifiedCreator := range unverifiedCreators {
