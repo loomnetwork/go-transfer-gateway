@@ -45,12 +45,12 @@ HASHICORP_GIT_SHA = `cd ${HASHICORP_DIR} && git rev-parse --verify ${HASHICORP_G
 BTCD_GIT_SHA = `cd ${BTCD_DIR} && git rev-parse --verify ${BTCD_GIT_REV}`
 
 GOFLAGS_BASE = \
-	-X $(PKG).Build=$(BUILD_NUMBER) \
-	-X $(PKG).GitSHA=$(GIT_SHA) \
-	-X $(PKG).GoLoomGitSHA=$(GO_LOOM_GIT_SHA) \
-	-X $(PKG).EthGitSHA=$(ETHEREUM_GIT_SHA) \
-	-X $(PKG).HashicorpGitSHA=$(HASHICORP_GIT_SHA) \
-	-X $(PKG).BtcdGitSHA=$(BTCD_GIT_SHA)
+	-X $(PKG)/version.Build=$(BUILD_NUMBER) \
+	-X $(PKG)/version.GitSHA=$(GIT_SHA) \
+	-X $(PKG)/version.GoLoomGitSHA=$(GO_LOOM_GIT_SHA) \
+	-X $(PKG)/version.EthGitSHA=$(ETHEREUM_GIT_SHA) \
+	-X $(PKG)/version.HashicorpGitSHA=$(HASHICORP_GIT_SHA) \
+	-X $(PKG)/version.BtcdGitSHA=$(BTCD_GIT_SHA)
 GOFLAGS = -tags "evm gateway" -ldflags "$(GOFLAGS_BASE)"
 GOFLAGS_NOEVM = -tags "gateway" -ldflags "$(GOFLAGS_BASE)"
 
