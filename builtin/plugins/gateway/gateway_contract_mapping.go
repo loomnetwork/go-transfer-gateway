@@ -36,9 +36,10 @@ func (gw *Gateway) AddContractMapping(ctx contract.Context, req *AddContractMapp
 	case TronGateway:
 		// Skip checking tx hash since these gateways do not have API for us to verify
 	case BinanceGateway:
-		// Need to check feature if binance sig type is enabled to prevent consensus failure
-		authSigTxBinanceEnabled := ctx.FeatureEnabled(loomchain.AuthSigTxBinance, false)
-		if !authSigTxBinanceEnabled && req.ForeignContractTxHash == nil {
+		// This gateway doesn't need a tx hash to verify contract ownership, but because the original
+		// version was released with this requirement we have to use a feature flag to safely switch
+		// over to the correct behavior.
+		if req.ForeignContractTxHash == nil && !ctx.FeatureEnabled(loomchain.TGBinanceContractMappingFeature, false) {
 			return ErrInvalidRequest
 		}
 	default:
@@ -80,7 +81,17 @@ func (gw *Gateway) AddContractMapping(ctx contract.Context, req *AddContractMapp
 		ssha.Address(common.BytesToAddress(req.LocalContract.Local)),
 	)
 
-	allowedSigTypes := evmcompat.GetAllowedSignatureTypes(ctx)
+	allowedSigTypes := []evmcompat.SignatureType{
+		evmcompat.SignatureType_EIP712,
+		evmcompat.SignatureType_GETH,
+		evmcompat.SignatureType_TREZOR,
+		evmcompat.SignatureType_TRON,
+	}
+
+	if gw.Type == BinanceGateway && ctx.FeatureEnabled(loomchain.TGBinanceContractMappingFeature, false) {
+		allowedSigTypes = append(allowedSigTypes, evmcompat.SignatureType_BINANCE)
+	}
+
 	signerAddr, err := evmcompat.RecoverAddressFromTypedSig(hash, req.ForeignContractCreatorSig, allowedSigTypes)
 	if err != nil {
 		return err

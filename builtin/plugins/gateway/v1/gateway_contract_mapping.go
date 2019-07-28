@@ -63,8 +63,13 @@ func (gw *Gateway) AddContractMapping(ctx contract.Context, req *AddContractMapp
 		ssha.Address(common.BytesToAddress(req.LocalContract.Local)),
 	)
 
-	allowedSigTypes := evmcompat.GetAllowedSignatureTypes(ctx)
-	signerAddr, err := evmcompat.RecoverAddressFromTypedSig(hash, req.ForeignContractCreatorSig, allowedSigTypes)
+	signerAddr, err := evmcompat.RecoverAddressFromTypedSig(
+		hash, req.ForeignContractCreatorSig, []evmcompat.SignatureType{
+			evmcompat.SignatureType_EIP712,
+			evmcompat.SignatureType_GETH,
+			evmcompat.SignatureType_TREZOR,
+		},
+	)
 	if err != nil {
 		return err
 	}
