@@ -10,6 +10,7 @@ import (
 	"github.com/loomnetwork/go-loom/common/evmcompat"
 	contract "github.com/loomnetwork/go-loom/plugin/contractpb"
 	"github.com/loomnetwork/go-loom/types"
+	"github.com/loomnetwork/loomchain"
 	ssha "github.com/miguelmota/go-solidity-sha3"
 )
 
@@ -30,9 +31,21 @@ func (gw *Gateway) AddContractMapping(ctx contract.Context, req *AddContractMapp
 	if req.ForeignContract == nil || req.LocalContract == nil || req.ForeignContractCreatorSig == nil {
 		return ErrInvalidRequest
 	}
-	// Don't need the TRON contract creation tx hash to verify the contract creator
-	if (gw.Type != TronGateway) && (req.ForeignContractTxHash == nil) {
-		return ErrInvalidRequest
+
+	switch gw.Type {
+	case TronGateway:
+		// Skip checking tx hash since these gateways do not have API for us to verify
+	case BinanceGateway:
+		// This gateway doesn't need a tx hash to verify contract ownership, but because the original
+		// version was released with this requirement we have to use a feature flag to safely switch
+		// over to the correct behavior.
+		if req.ForeignContractTxHash == nil && !ctx.FeatureEnabled(loomchain.TGBinanceContractMappingFeature, false) {
+			return ErrInvalidRequest
+		}
+	default:
+		if req.ForeignContractTxHash == nil {
+			return ErrInvalidRequest
+		}
 	}
 
 	foreignAddr := loom.UnmarshalAddressPB(req.ForeignContract)
@@ -68,7 +81,18 @@ func (gw *Gateway) AddContractMapping(ctx contract.Context, req *AddContractMapp
 		ssha.Address(common.BytesToAddress(req.LocalContract.Local)),
 	)
 
-	signerAddr, err := evmcompat.RecoverAddressFromTypedSig(hash, req.ForeignContractCreatorSig)
+	allowedSigTypes := []evmcompat.SignatureType{
+		evmcompat.SignatureType_EIP712,
+		evmcompat.SignatureType_GETH,
+		evmcompat.SignatureType_TREZOR,
+		evmcompat.SignatureType_TRON,
+	}
+
+	if gw.Type == BinanceGateway && ctx.FeatureEnabled(loomchain.TGBinanceContractMappingFeature, false) {
+		allowedSigTypes = append(allowedSigTypes, evmcompat.SignatureType_BINANCE)
+	}
+
+	signerAddr, err := evmcompat.RecoverAddressFromTypedSig(hash, req.ForeignContractCreatorSig, allowedSigTypes)
 	if err != nil {
 		return err
 	}
@@ -162,12 +186,15 @@ func (gw *Gateway) UnverifiedContractCreators(ctx contract.StaticContext,
 			return nil, err
 		}
 
-		if gw.Type == TronGateway {
+		switch gw.Type {
+		case TronGateway, BinanceGateway:
+			// Tron and Binance Gateway do not have contract tx hash,
+			// Return only contract address to the client
 			creators = append(creators, &UnverifiedContractCreator{
 				ContractMappingID: mapping.ID,
 				ContractAddress:   mapping.ForeignContract,
 			})
-		} else {
+		default:
 			creators = append(creators, &UnverifiedContractCreator{
 				ContractMappingID: mapping.ID,
 				ContractTxHash:    mapping.ForeignContractTxHash,
