@@ -48,6 +48,8 @@ var (
 	binanceTokenAddr  = loom.MustParseAddress("binance:0xb16a379ec18d4093666f8f38b11a3071c920207d")
 	binanceTokenAddr2 = loom.MustParseAddress("binance:0x0000000000000000000000004d4f4f4c2d434243")
 	binanceBNBAddr    = loom.MustParseAddress("binance:0x0000000000000000000000000000000000424e42")
+
+	sigType = evmcompat.SignatureType_EIP712
 )
 
 const (
@@ -424,7 +426,7 @@ func (ts *GatewayTestSuite) TestConfirmWithdrawalReceiptV2() {
 	require.NoError(err)
 
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr, dappTokenAddr))
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
 
@@ -432,7 +434,8 @@ func (ts *GatewayTestSuite) TestConfirmWithdrawalReceiptV2() {
 	for i, _ := range ts.validatorsDetails {
 		var sig []byte
 
-		sig, err = address_mapper.SignIdentityMapping(ts.validatorsDetails[i].EthAddress, ts.validatorsDetails[i].DAppAddress, ts.validatorsDetails[i].EthPrivKey)
+		sig, err = address_mapper.SignIdentityMapping(ts.validatorsDetails[i].EthAddress,
+			ts.validatorsDetails[i].DAppAddress, ts.validatorsDetails[i].EthPrivKey, sigType)
 		require.NoError(err)
 
 		require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(ts.validatorsDetails[i].DAppAddress), ts.validatorsDetails[i].EthAddress, ts.validatorsDetails[i].DAppAddress, sig))
@@ -713,7 +716,7 @@ func (ts *GatewayTestSuite) TestOutOfOrderEventBatchProcessing() {
 	require.NoError(err)
 
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr, dappTokenAddr))
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
 
@@ -793,7 +796,7 @@ func (ts *GatewayTestSuite) TestGatewayERC721Deposit() {
 	require.NoError(err)
 
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr, dappTokenAddr))
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
 
@@ -842,7 +845,7 @@ func (ts *GatewayTestSuite) TestWithdrawalRestrictions() {
 	require.NoError(err)
 
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr, dappTokenAddr))
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
 
@@ -1135,7 +1138,7 @@ func (ts *GatewayTestSuite) TestReclaimTokensAfterIdentityMapping() {
 	require.Equal(1, len(depositors))
 
 	// The depositor finally add an identity mapping...
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
 
@@ -1200,10 +1203,10 @@ func (ts *GatewayTestSuite) TestReclaimTokensAfterContractMapping() {
 	bobEthAddr := ts.ethAddr2
 	bobDAppAddr := ts.dAppAddr2
 
-	sig, err := address_mapper.SignIdentityMapping(aliceEthAddr, aliceDAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(aliceEthAddr, aliceDAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, aliceEthAddr, aliceDAppAddr, sig))
-	sig, err = address_mapper.SignIdentityMapping(bobEthAddr, bobDAppAddr, ts.ethKey2)
+	sig, err = address_mapper.SignIdentityMapping(bobEthAddr, bobDAppAddr, ts.ethKey2, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(
 		fakeCtx.WithSender(bobDAppAddr),
@@ -1467,10 +1470,10 @@ func (ts *GatewayTestSuite) TestGetUnclaimedContractTokens() {
 	charlieEthAddr := ts.ethAddr4
 	charlieDAppAddr := ts.dAppAddr4
 
-	sig, err := address_mapper.SignIdentityMapping(aliceEthAddr, aliceDAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(aliceEthAddr, aliceDAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, aliceEthAddr, aliceDAppAddr, sig))
-	sig, err = address_mapper.SignIdentityMapping(bobEthAddr, bobDAppAddr, ts.ethKey2)
+	sig, err = address_mapper.SignIdentityMapping(bobEthAddr, bobDAppAddr, ts.ethKey2, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(
 		fakeCtx.WithSender(bobDAppAddr),
@@ -2134,7 +2137,7 @@ func (ts *GatewayTestSuite) TestCheckSeenTxHash() {
 	require.NoError(err)
 
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr, dappTokenAddr))
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
 
@@ -2274,7 +2277,7 @@ func (ts *GatewayTestSuite) TestGatewayTRC20Deposit() {
 	require.NoError(err)
 
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, tronTokenAddr, dappTokenAddr))
-	sig, err := address_mapper.SignIdentityMapping(ts.tronAddr, ts.dAppAddr, ts.tronKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.tronAddr, ts.dAppAddr, ts.tronKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.tronAddr, ts.dAppAddr, sig))
 
@@ -2331,11 +2334,11 @@ func (ts *GatewayTestSuite) TestTronGateway() {
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, TRXTokenAddr, dappTRXTokenAddr))
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, tronTokenAddr2, dappTRC20TokenAddr))
 
-	sig, err := address_mapper.SignIdentityMapping(justinTRXTronAddr, justinTRXdAppAddr, ts.tronKey)
+	sig, err := address_mapper.SignIdentityMapping(justinTRXTronAddr, justinTRXdAppAddr, ts.tronKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(justinTRXdAppAddr), justinTRXTronAddr, justinTRXdAppAddr, sig))
 
-	sig, err = address_mapper.SignIdentityMapping(justinTRC20TronAddr, justinTRC20dAppAddr, ts.tronKey2)
+	sig, err = address_mapper.SignIdentityMapping(justinTRC20TronAddr, justinTRC20dAppAddr, ts.tronKey2, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(justinTRC20dAppAddr), justinTRC20TronAddr, justinTRC20dAppAddr, sig))
 
@@ -2425,7 +2428,7 @@ func (ts *GatewayTestSuite) TestBinanceGateway() {
 	addressMapper, err := deployAddressMapperContract(fakeCtx)
 	require.NoError(err)
 
-	sig, err := address_mapper.SignIdentityMapping(czBinanceAddr, czBinanceDappAddr, ts.binanceKey)
+	sig, err := address_mapper.SignIdentityMapping(czBinanceAddr, czBinanceDappAddr, ts.binanceKey, sigType)
 	require.NoError(err)
 
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(czBinanceDappAddr), czBinanceAddr, czBinanceDappAddr, sig))

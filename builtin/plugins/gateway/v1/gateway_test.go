@@ -30,6 +30,8 @@ var (
 
 	ethTokenAddr  = loom.MustParseAddress("eth:0xb16a379ec18d4093666f8f38b11a3071c920207d")
 	ethTokenAddr2 = loom.MustParseAddress("eth:0xfa4c7920accfd66b86f5fd0e69682a79f762d49e")
+
+	sigType = evmcompat.SignatureType_EIP712
 )
 
 const (
@@ -293,7 +295,7 @@ func (ts *GatewayTestSuite) TestOutOfOrderEventBatchProcessing() {
 	require.NoError(err)
 
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr, dappTokenAddr))
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
 
@@ -373,7 +375,7 @@ func (ts *GatewayTestSuite) TestGatewayERC721Deposit() {
 	require.NoError(err)
 
 	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr, dappTokenAddr))
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
 
@@ -461,7 +463,7 @@ func (ts *GatewayTestSuite) TestReclaimTokensAfterIdentityMapping() {
 	require.Equal(1, len(depositors))
 
 	// The depositor finally add an identity mapping...
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
 
@@ -507,10 +509,10 @@ func (ts *GatewayTestSuite) TestReclaimTokensAfterContractMapping() {
 
 	// Don't add the contract mapping between the Mainnet & DAppChain contracts...
 
-	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey)
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
-	sig, err = address_mapper.SignIdentityMapping(ts.ethAddr2, ts.dAppAddr2, ts.ethKey2)
+	sig, err = address_mapper.SignIdentityMapping(ts.ethAddr2, ts.dAppAddr2, ts.ethKey2, sigType)
 	require.NoError(err)
 	require.NoError(addressMapper.AddIdentityMapping(
 		fakeCtx.WithSender(ts.dAppAddr2),
