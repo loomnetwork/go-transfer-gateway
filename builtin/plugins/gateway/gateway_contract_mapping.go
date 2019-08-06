@@ -90,6 +90,10 @@ func (gw *Gateway) AddContractMapping(ctx contract.Context, req *AddContractMapp
 
 	if gw.Type == BinanceGateway && ctx.FeatureEnabled(loomchain.TGBinanceContractMappingFeature, false) {
 		allowedSigTypes = append(allowedSigTypes, evmcompat.SignatureType_BINANCE)
+		hash = evmcompat.GenSHA256(
+			ssha.Address(common.BytesToAddress(req.ForeignContract.Local)),
+			ssha.Address(common.BytesToAddress(req.LocalContract.Local)),
+		)
 	}
 
 	signerAddr, err := evmcompat.RecoverAddressFromTypedSig(hash, req.ForeignContractCreatorSig, allowedSigTypes)
