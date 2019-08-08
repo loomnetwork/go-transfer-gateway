@@ -4,7 +4,6 @@ package gateway
 
 import (
 	"encoding/hex"
-	"fmt"
 
 	"github.com/gogo/protobuf/proto"
 
@@ -37,7 +36,11 @@ type BatchSignWithdrawalFn struct {
 	logger *loom.Logger
 }
 
+// TODO: Since GetMessageAndSignature & MapMessage return an error so should this, otherwise the
+//       Fn interface is oddly inconsistent.
 func (b *BatchSignWithdrawalFn) SubmitMultiSignedMessage(ctx []byte, key []byte, signatures [][]byte) {
+	// TODO: mappedMessage appears to grow without bound, shouldn't we remove the message once it's
+	//       submitted? And evict messages that haven't been processed every so often?
 	message := b.mappedMessage[hex.EncodeToString(key)]
 	if message == nil {
 		b.logger.Error("unable to find the message")
@@ -86,13 +89,21 @@ func (b *BatchSignWithdrawalFn) SubmitMultiSignedMessage(ctx []byte, key []byte,
 }
 
 func (b *BatchSignWithdrawalFn) GetMessageAndSignature(ctx []byte) ([]byte, []byte, error) {
+	// TODO: This is only going to work as long as the withdrawals aren't created too frequently,
+	//       so all validators are likely to get the same set of withdrawals. Otherwise we'd have to
+	//       make this fetch a bit more deterministic by requesting withdrawals within set block
+	//       ranges.
 	pendingWithdrawals, err := b.goGateway.PendingWithdrawalsV2(b.mainnetGatewayAddress)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// TODO: Shouldn't return an error in this case, otherwise we end up with a bunch of useless
+	//       spam in the logs. Should return nil, nil, nil and have the caller skip any processing
+	//       of the message. Alternatively export a well defined ErrNoMessageFound error from the
+	//       fnConsensus package and return it here so the caller can check for it and not log it.
 	if len(pendingWithdrawals) == 0 {
-		return nil, nil, fmt.Errorf("no pending withdrawals, terminating...")
+		return nil, nil, errors.New("no pending withdrawals, terminating...")
 	}
 
 	numPendingWithdrawalsToProcess := len(pendingWithdrawals)
@@ -101,7 +112,7 @@ func (b *BatchSignWithdrawalFn) GetMessageAndSignature(ctx []byte) ([]byte, []by
 	}
 	pendingWithdrawals = pendingWithdrawals[:numPendingWithdrawalsToProcess]
 
-	signature := make([]byte, len(pendingWithdrawals)*SignatureSize)
+	combinedSignature := make([]byte, len(pendingWithdrawals)*SignatureSize)
 
 	batchWithdrawalFnMessage := &BatchWithdrawalFnMessage{
 		WithdrawalMessages: make([]*WithdrawalMessage, len(pendingWithdrawals)),
@@ -113,19 +124,20 @@ func (b *BatchSignWithdrawalFn) GetMessageAndSignature(ctx []byte) ([]byte, []by
 			return nil, nil, err
 		}
 
-		copy(signature[(i*SignatureSize):], sig)
+		copy(combinedSignature[(i*SignatureSize):], sig)
 
-		batchWithdrawalFnMessage.WithdrawalMessages[i] = &WithdrawalMessage{}
-		batchWithdrawalFnMessage.WithdrawalMessages[i].TokenOwner = pendingWithdrawal.TokenOwner
-		batchWithdrawalFnMessage.WithdrawalMessages[i].WithdrawalHash = pendingWithdrawal.Hash
+		batchWithdrawalFnMessage.WithdrawalMessages[i] = &WithdrawalMessage{
+			TokenOwner:     pendingWithdrawal.TokenOwner,
+			WithdrawalHash: pendingWithdrawal.Hash,
+		}
 	}
 
 	message, err := proto.Marshal(batchWithdrawalFnMessage)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.Wrap(err, "failed to marshal batch withdrawal msg")
 	}
 
-	return message, signature, nil
+	return message, combinedSignature, nil
 }
 
 func (b *BatchSignWithdrawalFn) MapMessage(ctx, key, message []byte) error {
@@ -135,7 +147,7 @@ func (b *BatchSignWithdrawalFn) MapMessage(ctx, key, message []byte) error {
 
 func CreateBatchSignWithdrawalFn(isLoomcoinFn bool, chainID string, tgConfig *TransferGatewayConfig, signer auth.Signer) (*BatchSignWithdrawalFn, error) {
 	if tgConfig == nil || tgConfig.BatchSignFnConfig == nil {
-		return nil, fmt.Errorf("unable to start batch sign withdrawal Fn as configuration is invalid")
+		return nil, errors.New("unable to start batch sign withdrawal Fn as configuration is invalid")
 	}
 
 	fnConfig := tgConfig.BatchSignFnConfig

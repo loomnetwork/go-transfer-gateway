@@ -1392,7 +1392,9 @@ func (gw *Gateway) ConfirmWithdrawalReceiptV2(ctx contract.Context, req *Confirm
 			return err
 		}
 
-		// Reject if not all trusted validators signed
+		// Reject if not all trusted validators signed.
+		// NOTE: FnConsensus.Reactor.FnVoteSigningThreshold == AllSigningThreshold must be set cluster-wide
+		//       for this to actually work properly.
 		if len(valIndexes) != len(validatorsAuthConfig.TrustedValidators.Validators) {
 			return ErrNotEnoughSignatures
 		}
