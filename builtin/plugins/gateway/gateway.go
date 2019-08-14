@@ -145,6 +145,7 @@ const (
 	// Events
 	tokenWithdrawalSignedEventTopic     = "event:TokenWithdrawalSigned"
 	contractMappingConfirmedEventTopic  = "event:ContractMappingConfirmed"
+	contractMappingRejectedEventTopic   = "event:ContractMappingRejected"
 	withdrawETHTopic                    = "event:WithdrawETH"
 	withdrawLoomCoinTopic               = "event:WithdrawLoomCoin"
 	withdrawTokenTopic                  = "event:WithdrawToken"

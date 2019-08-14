@@ -20,6 +20,7 @@ type (
 	UnverifiedContractCreator          = tgtypes.TransferGatewayUnverifiedContractCreator
 	VerifiedContractCreator            = tgtypes.TransferGatewayVerifiedContractCreator
 	ContractMappingConfirmed           = tgtypes.TransferGatewayContractMappingConfirmed
+	ContractMappingRejected            = tgtypes.TransferGatewayContractMappingRejected
 	AddContractMappingRequest          = tgtypes.TransferGatewayAddContractMappingRequest
 	UnverifiedContractCreatorsRequest  = tgtypes.TransferGatewayUnverifiedContractCreatorsRequest
 	UnverifiedContractCreatorsResponse = tgtypes.TransferGatewayUnverifiedContractCreatorsResponse
@@ -234,6 +235,22 @@ func (gw *Gateway) VerifyContractCreators(ctx contract.Context,
 		}
 
 		if err := confirmContractMapping(ctx, mappingKey, mapping, creatorInfo); err != nil {
+			payload, marshalErr := proto.Marshal(&ContractMappingRejected{
+				LocalContract:           mapping.LocalContract,
+				ExpectedForeignContract: mapping.ForeignContract,
+				ExpectedCreator:         mapping.ForeignContractCreator,
+				ActualForeignContract:   creatorInfo.Contract,
+				ActualCreator:           creatorInfo.Creator,
+				ErrorMessage:            err.Error(),
+			})
+			if marshalErr != nil {
+				ctx.Logger().Error(
+					"[Transfer Gateway] failed to marshal contract mapping rejection event",
+					"err", marshalErr,
+				)
+				return err
+			}
+			ctx.EmitTopics(payload, contractMappingRejectedEventTopic)
 			return err
 		}
 	}
@@ -335,6 +352,18 @@ func confirmContractMapping(ctx contract.Context, pendingMappingKey []byte, mapp
 			"actual-contract", confirmation.Contract.Local,
 			"actual-creator", confirmation.Creator.Local,
 		)
+		payload, err := proto.Marshal(&ContractMappingRejected{
+			LocalContract:           mapping.LocalContract,
+			ExpectedForeignContract: mapping.ForeignContract,
+			ExpectedCreator:         mapping.ForeignContractCreator,
+			ActualForeignContract:   confirmation.Contract,
+			ActualCreator:           confirmation.Creator,
+		})
+		if err != nil {
+			ctx.Logger().Error("[Transfer Gateway] failed to marshal contract mapping rejection event", "err", err)
+			return nil
+		}
+		ctx.EmitTopics(payload, contractMappingRejectedEventTopic)
 		return nil
 	}
 
