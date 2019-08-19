@@ -318,17 +318,17 @@ func (orc *Oracle) connect() error {
 		dappClient := client.NewDAppChainRPCClient(orc.chainID, orc.cfg.DAppChainWriteURI, orc.cfg.DAppChainReadURI)
 		switch orc.gatewayType {
 		case gwcontract.EthereumGateway:
-			orc.goGateway, err = ConnectToDAppChainGateway(dappClient, orc.address, orc.signer, orc.logger)
+			orc.goGateway, err = ConnectToDAppChainGateway(dappClient, orc.address, orc.signer, orc.logger, orc.mainnetGatewayAddress)
 			if err != nil {
 				return errors.Wrap(err, "failed to create dappchain gateway")
 			}
 		case gwcontract.LoomCoinGateway:
-			orc.goGateway, err = ConnectToDAppChainLoomCoinGateway(dappClient, orc.address, orc.signer, orc.logger)
+			orc.goGateway, err = ConnectToDAppChainLoomCoinGateway(dappClient, orc.address, orc.signer, orc.logger, orc.mainnetGatewayAddress)
 			if err != nil {
 				return errors.Wrap(err, "failed to create dappchain loomcoin gateway")
 			}
 		case gwcontract.TronGateway:
-			orc.goGateway, err = ConnectToDAppChainTronGateway(dappClient, orc.address, orc.signer, orc.logger)
+			orc.goGateway, err = ConnectToDAppChainTronGateway(dappClient, orc.address, orc.signer, orc.logger, orc.mainnetGatewayAddress)
 			if err != nil {
 				return errors.Wrap(err, "failed to create dappchain tron gateway")
 			}
@@ -561,9 +561,9 @@ func (orc *Oracle) signPendingWithdrawals() error {
 
 	var withdrawals []*PendingWithdrawalSummary
 	if orc.withdrawalSig == UnprefixedWithdrawalSigType { // old gateway
-		withdrawals, err = orc.goGateway.PendingWithdrawals(orc.mainnetGatewayAddress)
+		withdrawals, err = orc.goGateway.PendingWithdrawals()
 	} else { // new gateway
-		withdrawals, err = orc.goGateway.PendingWithdrawalsV2(orc.mainnetGatewayAddress)
+		withdrawals, err = orc.goGateway.PendingWithdrawalsV2()
 	}
 
 	if err != nil {
@@ -598,9 +598,10 @@ func (orc *Oracle) signPendingWithdrawals() error {
 			return err
 		}
 		req := &ConfirmWithdrawalReceiptRequest{
-			TokenOwner:      summary.TokenOwner,
-			OracleSignature: sig,
-			WithdrawalHash:  summary.Hash,
+			TokenOwner:            summary.TokenOwner,
+			OracleSignature:       sig,
+			WithdrawalHash:        summary.Hash,
+			MainnetGatewayAddress: orc.mainnetGatewayAddress.MarshalPB(),
 		}
 		// Ignore errors indicating a receipt has been signed already, they simply indicate another
 		// Oracle has managed to sign the receipt already.

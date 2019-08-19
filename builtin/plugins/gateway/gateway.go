@@ -102,6 +102,7 @@ type (
 	TxStatus                        = tgtypes.TransferGatewayTxStatus
 	ResubmitWithdrawalRequest       = tgtypes.TransferGatewayResubmitWithdrawalRequest
 	UpdateBinanceTransferFeeRequest = tgtypes.TransferGatewayUpdateBinanceTransferFeeRequest
+	UpdateMainnetGatewayRequest     = tgtypes.TransferGatewayUpdateMainnetGatewayRequest
 )
 
 var (
@@ -251,9 +252,11 @@ var (
 	ErrNoUnprocessedTxHashExists      = errors.New("TG016: no unprocessed tx hash exists")
 	ErrHotWalletFeatureDisabled       = errors.New("TG017: hot wallet feature is disabled")
 
-	ErrInvalidUpdateWithdrawalReceipt = errors.New("TG018: invalid update withdrawal receipt status")
-	ErrWithdrawalReceiptConfirmed     = errors.New("TG019: withdrawal receipt already confirmed")
-	ErrMissingWithdrawalHash          = errors.New("TG020: withdrawal hash is missing")
+	ErrInvalidUpdateWithdrawalReceipt   = errors.New("TG018: invalid update withdrawal receipt status")
+	ErrWithdrawalReceiptConfirmed       = errors.New("TG019: withdrawal receipt already confirmed")
+	ErrMissingWithdrawalHash            = errors.New("TG020: withdrawal hash is missing")
+	ErrGatewayVersion1_1FeatureDisabled = errors.New("TG021: v1.1 hasn't been enabled")
+	ErrInvalidMainnetGateway            = errors.New("TG022: invalid mainnet gateway address")
 )
 
 type GatewayType int
@@ -455,6 +458,29 @@ func (gw *Gateway) ReplaceOwner(ctx contract.Context, req *AddOracleRequest) err
 	return saveState(ctx, state)
 }
 
+func (gw *Gateway) UpdateMainnetGatewayAddress(ctx contract.Context, req *UpdateMainnetGatewayRequest) error {
+	if ctx.FeatureEnabled(loomchain.TGVersion1_1, false) {
+		return ErrGatewayVersion1_1FeatureDisabled
+	}
+
+	if req.MainnetGatewayAddress == nil {
+		return ErrInvalidRequest
+	}
+
+	state, err := loadState(ctx)
+	if err != nil {
+		return err
+	}
+
+	if loom.UnmarshalAddressPB(state.Owner).Compare(ctx.Message().Sender) != 0 {
+		return ErrNotAuthorized
+	}
+
+	state.MainnetGatewayAddress = req.MainnetGatewayAddress
+
+	return saveState(ctx, state)
+}
+
 func removeOracle(ctx contract.Context, oracleAddr loom.Address) error {
 	ctx.RevokePermissionFrom(oracleAddr, submitEventsPerm, oracleRole)
 	ctx.RevokePermissionFrom(oracleAddr, signWithdrawalsPerm, oracleRole)
@@ -492,6 +518,10 @@ func (gw *Gateway) ProcessDepositEventByTxHash(ctx contract.Context, req *Proces
 		return ErrNotAuthorized
 	}
 
+	if err := validateMainnetGatewayAddress(ctx, req.MainnetGatewayAddress); err != nil {
+		return err
+	}
+
 	for _, ev := range req.Events {
 		switch payload := ev.Payload.(type) {
 		case *tgtypes.TransferGatewayMainnetEvent_Deposit:
@@ -514,6 +544,10 @@ func (gw *Gateway) ProcessDepositEventByTxHash(ctx contract.Context, req *Proces
 func (gw *Gateway) ProcessEventBatch(ctx contract.Context, req *ProcessEventBatchRequest) error {
 	if ok, _ := ctx.HasPermission(submitEventsPerm, []string{oracleRole}); !ok {
 		return ErrNotAuthorized
+	}
+
+	if err := validateMainnetGatewayAddress(ctx, req.MainnetGatewayAddress); err != nil {
+		return err
 	}
 
 	state, err := loadState(ctx)
@@ -1107,6 +1141,10 @@ func (gw *Gateway) ClearInvalidDepositTxHash(ctx contract.Context, req *ClearInv
 		return ErrNotAuthorized
 	}
 
+	if err := validateMainnetGatewayAddress(ctx, req.MainnetGatewayAddress); err != nil {
+		return err
+	}
+
 	extState, err := loadExtendedState(ctx)
 	if err != nil {
 		return err
@@ -1330,6 +1368,10 @@ func (gw *Gateway) ConfirmWithdrawalReceipt(ctx contract.Context, req *ConfirmWi
 		return ErrNotAuthorized
 	}
 
+	if err := validateMainnetGatewayAddress(ctx, req.MainnetGatewayAddress); err != nil {
+		return err
+	}
+
 	return gw.doConfirmWithdrawalReceipt(ctx, req)
 }
 
@@ -1363,6 +1405,10 @@ func (gw *Gateway) ConfirmWithdrawalReceiptV2(ctx contract.Context, req *Confirm
 
 	if req.TokenOwner == nil || req.OracleSignature == nil {
 		return ErrInvalidRequest
+	}
+
+	if err := validateMainnetGatewayAddress(ctx, req.MainnetGateway); err != nil {
+		return err
 	}
 
 	ownerAddr := loom.UnmarshalAddressPB(req.TokenOwner)
@@ -1497,6 +1543,7 @@ func (gw *Gateway) calculateHashFromReceiptV2(mainnetGatewayAddr *types.Address,
 	return hash
 }
 
+// TODO: Inline this in ConfirmWithdrawalReceiptV2
 func (gw *Gateway) doConfirmWithdrawalReceiptV2(ctx contract.Context, account *LocalAccount, oracleSignature []byte) error {
 	account.WithdrawalReceipt.OracleSignature = oracleSignature
 
@@ -1522,8 +1569,8 @@ func (gw *Gateway) doConfirmWithdrawalReceiptV2(ctx contract.Context, account *L
 	return nil
 }
 
+// TODO: Inline this in ConfirmWithdrawalReceipt
 func (gw *Gateway) doConfirmWithdrawalReceipt(ctx contract.Context, req *ConfirmWithdrawalReceiptRequest) error {
-
 	if req.TokenOwner == nil || req.OracleSignature == nil {
 		return ErrInvalidRequest
 	}
@@ -1566,7 +1613,9 @@ func (gw *Gateway) doConfirmWithdrawalReceipt(ctx contract.Context, req *Confirm
 
 // PendingWithdrawals will return the token owner & withdrawal hash for all pending withdrawals.
 // The Oracle will call this method periodically and sign all the retrieved hashes.
-func (gw *Gateway) PendingWithdrawalsV2(ctx contract.StaticContext, req *PendingWithdrawalsRequest) (*PendingWithdrawalsResponse, error) {
+func (gw *Gateway) PendingWithdrawalsV2(
+	ctx contract.StaticContext, req *PendingWithdrawalsRequest,
+) (*PendingWithdrawalsResponse, error) {
 	if req.MainnetGateway == nil {
 		return nil, ErrInvalidRequest
 	}
@@ -1608,7 +1657,9 @@ func (gw *Gateway) PendingWithdrawalsV2(ctx contract.StaticContext, req *Pending
 
 // PendingWithdrawals will return the token owner & withdrawal hash for all pending withdrawals.
 // The Oracle will call this method periodically and sign all the retrieved hashes.
-func (gw *Gateway) PendingWithdrawals(ctx contract.StaticContext, req *PendingWithdrawalsRequest) (*PendingWithdrawalsResponse, error) {
+func (gw *Gateway) PendingWithdrawals(
+	ctx contract.StaticContext, req *PendingWithdrawalsRequest,
+) (*PendingWithdrawalsResponse, error) {
 	if req.MainnetGateway == nil {
 		return nil, ErrInvalidRequest
 	}
@@ -1705,7 +1756,9 @@ func (gw *Gateway) ReclaimDepositorTokens(ctx contract.Context, req *ReclaimDepo
 	return nil
 }
 
-func (gw *Gateway) GetUnclaimedTokens(ctx contract.StaticContext, req *GetUnclaimedTokensRequest) (*GetUnclaimedTokensResponse, error) {
+func (gw *Gateway) GetUnclaimedTokens(
+	ctx contract.StaticContext, req *GetUnclaimedTokensRequest,
+) (*GetUnclaimedTokensResponse, error) {
 	ownerAddr := loom.UnmarshalAddressPB(req.Owner)
 	unclaimedTokens, err := unclaimedTokensByOwner(ctx, ownerAddr)
 	if err != nil {
@@ -2597,6 +2650,27 @@ func isTokenKindAllowed(gwType GatewayType, tokenKind TokenKind) bool {
 	return false
 }
 
+func validateMainnetGatewayAddress(ctx contract.Context, mainnetAddress *types.Address) error {
+	if !ctx.FeatureEnabled(loomchain.TGVersion1_1, false) {
+		return nil
+	}
+
+	if mainnetAddress == nil {
+		return ErrInvalidRequest
+	}
+
+	state, err := loadState(ctx)
+	if err != nil {
+		return err
+	}
+
+	if loom.UnmarshalAddressPB(state.MainnetGatewayAddress).Compare(loom.UnmarshalAddressPB(mainnetAddress)) != 0 {
+		return ErrInvalidMainnetGateway
+	}
+
+	return nil
+}
+
 // UpdateWithdrawalReceipt updates the status of a pending withdrawal from the Binance gateway.
 // The status of a pending withdrawal can either change to confirmed or rejected. This function
 // can only be called by the TG Oracle.
@@ -2607,6 +2681,10 @@ func (gw *Gateway) UpdateWithdrawalReceipt(ctx contract.Context, req *ConfirmWit
 
 	if ok, _ := ctx.HasPermission(signWithdrawalsPerm, []string{oracleRole}); !ok {
 		return ErrNotAuthorized
+	}
+
+	if err := validateMainnetGatewayAddress(ctx, req.MainnetGatewayAddress); err != nil {
+		return err
 	}
 
 	ownerAddr := loom.UnmarshalAddressPB(req.TokenOwner)

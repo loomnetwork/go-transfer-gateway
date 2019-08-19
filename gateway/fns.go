@@ -93,7 +93,7 @@ func (b *BatchSignWithdrawalFn) GetMessageAndSignature(ctx []byte) ([]byte, []by
 	//       so all validators are likely to get the same set of withdrawals. Otherwise we'd have to
 	//       make this fetch a bit more deterministic by requesting withdrawals within set block
 	//       ranges.
-	pendingWithdrawals, err := b.goGateway.PendingWithdrawalsV2(b.mainnetGatewayAddress)
+	pendingWithdrawals, err := b.goGateway.PendingWithdrawalsV2()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -150,6 +150,11 @@ func CreateBatchSignWithdrawalFn(isLoomcoinFn bool, chainID string, tgConfig *Tr
 		return nil, errors.New("unable to start batch sign withdrawal Fn as configuration is invalid")
 	}
 
+	mainnetGatewayAddress := loom.Address{
+		ChainID: "eth",
+		Local:   common.HexToAddress(tgConfig.MainnetContractHexAddress).Bytes(),
+	}
+
 	fnConfig := tgConfig.BatchSignFnConfig
 
 	mainnetPrivateKey, err := LoadMainnetPrivateKey(fnConfig.MainnetPrivateKeyHsmEnabled, fnConfig.MainnetPrivateKeyPath)
@@ -162,10 +167,6 @@ func CreateBatchSignWithdrawalFn(isLoomcoinFn bool, chainID string, tgConfig *Tr
 		Local:   loom.LocalAddressFromPublicKey(signer.PublicKey()),
 	}
 
-	if !common.IsHexAddress(tgConfig.MainnetContractHexAddress) {
-		return nil, errors.New("invalid Mainnet Gateway address")
-	}
-
 	dappClient := client.NewDAppChainRPCClient(chainID, tgConfig.DAppChainWriteURI, tgConfig.DAppChainReadURI)
 
 	logger := loom.NewLoomLogger(fnConfig.LogLevel, fnConfig.LogDestination)
@@ -173,26 +174,23 @@ func CreateBatchSignWithdrawalFn(isLoomcoinFn bool, chainID string, tgConfig *Tr
 	var goGateway *DAppChainGateway
 
 	if isLoomcoinFn {
-		goGateway, err = ConnectToDAppChainLoomCoinGateway(dappClient, caller, signer, logger)
+		goGateway, err = ConnectToDAppChainLoomCoinGateway(dappClient, caller, signer, logger, mainnetGatewayAddress)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to create dappchain loomcoin gateway")
 		}
 	} else {
-		goGateway, err = ConnectToDAppChainGateway(dappClient, caller, signer, logger)
+		goGateway, err = ConnectToDAppChainGateway(dappClient, caller, signer, logger, mainnetGatewayAddress)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to create dappchain gateway")
 		}
 	}
 
 	batchWithdrawalFn := &BatchSignWithdrawalFn{
-		goGateway:      goGateway,
-		mainnetPrivKey: mainnetPrivateKey,
-		mappedMessage:  make(map[string][]byte),
-		mainnetGatewayAddress: loom.Address{
-			ChainID: "eth",
-			Local:   common.HexToAddress(tgConfig.MainnetContractHexAddress).Bytes(),
-		},
-		logger: loom.NewLoomLogger(fnConfig.LogLevel, fnConfig.LogDestination),
+		goGateway:             goGateway,
+		mainnetPrivKey:        mainnetPrivateKey,
+		mappedMessage:         make(map[string][]byte),
+		mainnetGatewayAddress: mainnetGatewayAddress,
+		logger:                loom.NewLoomLogger(fnConfig.LogLevel, fnConfig.LogDestination),
 	}
 
 	return batchWithdrawalFn, nil

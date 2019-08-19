@@ -85,6 +85,8 @@ type GatewayTestSuite struct {
 	tronAddr2         loom.Address
 	binanceKey        *ecdsa.PrivateKey
 	binanceAddr       loom.Address
+	ethTokenAddr      loom.Address
+	ethTokenAddr2     loom.Address
 }
 
 func (ts *GatewayTestSuite) SetupTest() {
@@ -193,8 +195,10 @@ func (ts *GatewayTestSuite) TestEmptyEventBatchProcessing() {
 func (ts *GatewayTestSuite) TestOwnerPermissions() {
 	require := ts.Require()
 	fakeCtx := lp.CreateFakeContext(ts.dAppAddr, loom.RootAddress("chain"))
+
 	ownerAddr := ts.dAppAddr
 	oracleAddr := ts.dAppAddr2
+	contractAddr := ts.ethTokenAddr
 
 	gwContract := &Gateway{}
 	require.NoError(gwContract.Init(contract.WrapPluginContext(fakeCtx), &InitRequest{
@@ -235,6 +239,19 @@ func (ts *GatewayTestSuite) TestOwnerPermissions() {
 		&ConfirmWithdrawalReceiptRequest{},
 	)
 	require.Equal(ErrNotAuthorized, err, "Only an oracle should be allowed to confirm withdrawals")
+
+	require.NoError(gwContract.UpdateMainnetGatewayAddress(
+		contract.WrapPluginContext(fakeCtx.WithSender(ownerAddr)),
+		&UpdateMainnetGatewayRequest{
+			MainnetGatewayAddress: contractAddr.MarshalPB(),
+		}), "Owner should be allowed to replace mainet gateway address")
+
+	err = gwContract.UpdateMainnetGatewayAddress(
+		contract.WrapPluginContext(fakeCtx.WithSender(oracleAddr)),
+		&UpdateMainnetGatewayRequest{
+			MainnetGatewayAddress: contractAddr.MarshalPB(),
+		})
+	require.Equal(ErrNotAuthorized, err, "Only owner should be allowed to replace mainet gateway address")
 }
 
 func (ts *GatewayTestSuite) TestResetBlock() {

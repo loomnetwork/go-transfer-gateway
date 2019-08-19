@@ -54,15 +54,17 @@ type DAppChainGateway struct {
 	// Timestamp of the last successful response from the DAppChain
 	LastResponseTime time.Time
 
-	contract *client.Contract
-	caller   loom.Address
-	logger   *loom.Logger
-	signer   auth.Signer
+	contract       *client.Contract
+	caller         loom.Address
+	logger         *loom.Logger
+	signer         auth.Signer
+	mainnetAddress loom.Address
 }
 
 func ConnectToDAppChainLoomCoinGateway(
 	loomClient *client.DAppChainRPCClient, caller loom.Address, signer auth.Signer,
 	logger *loom.Logger,
+	mainnetGatewayAddress loom.Address,
 ) (*DAppChainGateway, error) {
 	gatewayAddr, err := loomClient.Resolve("loomcoin-gateway")
 	if err != nil {
@@ -72,6 +74,7 @@ func ConnectToDAppChainLoomCoinGateway(
 	return &DAppChainGateway{
 		Address:          gatewayAddr,
 		LastResponseTime: time.Now(),
+		mainnetAddress:   mainnetGatewayAddress,
 		contract:         client.NewContract(loomClient, gatewayAddr.Local),
 		caller:           caller,
 		signer:           signer,
@@ -82,6 +85,7 @@ func ConnectToDAppChainLoomCoinGateway(
 func ConnectToDAppChainGateway(
 	loomClient *client.DAppChainRPCClient, caller loom.Address, signer auth.Signer,
 	logger *loom.Logger,
+	mainnetGatewayAddress loom.Address,
 ) (*DAppChainGateway, error) {
 	gatewayAddr, err := loomClient.Resolve("gateway")
 	if err != nil {
@@ -91,6 +95,7 @@ func ConnectToDAppChainGateway(
 	return &DAppChainGateway{
 		Address:          gatewayAddr,
 		LastResponseTime: time.Now(),
+		mainnetAddress:   mainnetGatewayAddress,
 		contract:         client.NewContract(loomClient, gatewayAddr.Local),
 		caller:           caller,
 		signer:           signer,
@@ -101,6 +106,7 @@ func ConnectToDAppChainGateway(
 func ConnectToDAppChainTronGateway(
 	loomClient *client.DAppChainRPCClient, caller loom.Address, signer auth.Signer,
 	logger *loom.Logger,
+	mainnetGatewayAddress loom.Address,
 ) (*DAppChainGateway, error) {
 	gatewayAddr, err := loomClient.Resolve("tron-gateway")
 	if err != nil {
@@ -110,6 +116,7 @@ func ConnectToDAppChainTronGateway(
 	return &DAppChainGateway{
 		Address:          gatewayAddr,
 		LastResponseTime: time.Now(),
+		mainnetAddress:   mainnetGatewayAddress,
 		contract:         client.NewContract(loomClient, gatewayAddr.Local),
 		caller:           caller,
 		signer:           signer,
@@ -120,6 +127,7 @@ func ConnectToDAppChainTronGateway(
 func ConnectToDAppChainBinanceGateway(
 	loomClient *client.DAppChainRPCClient, caller loom.Address, signer auth.Signer,
 	logger *loom.Logger,
+	mainnetGatewayAddress loom.Address,
 ) (*DAppChainGateway, error) {
 	gatewayAddr, err := loomClient.Resolve("binance-gateway")
 	if err != nil {
@@ -129,6 +137,7 @@ func ConnectToDAppChainBinanceGateway(
 	return &DAppChainGateway{
 		Address:          gatewayAddr,
 		LastResponseTime: time.Now(),
+		mainnetAddress:   mainnetGatewayAddress,
 		contract:         client.NewContract(loomClient, gatewayAddr.Local),
 		caller:           caller,
 		signer:           signer,
@@ -148,7 +157,8 @@ func (gw *DAppChainGateway) LastMainnetBlockNum() (uint64, error) {
 
 func (gw *DAppChainGateway) ClearInvalidDepositTxHashes(txHashes [][]byte) error {
 	req := &ClearInvalidDepositTxHashRequest{
-		TxHashes: txHashes,
+		TxHashes:              txHashes,
+		MainnetGatewayAddress: gw.mainnetAddress.MarshalPB(),
 	}
 	if _, err := gw.contract.Call("ClearInvalidDepositTxHash", req, gw.signer, nil); err != nil {
 		gw.logger.Error("failed to commit ClearInvalidLoomCoinDepositTxHash tx", "err", err)
@@ -161,7 +171,8 @@ func (gw *DAppChainGateway) ClearInvalidDepositTxHashes(txHashes [][]byte) error
 func (gw *DAppChainGateway) ProcessDepositEventByTxHash(events []*MainnetEvent) error {
 	// TODO: limit max message size to under 1MB
 	req := &ProcessEventBatchRequest{
-		Events: events,
+		Events:                events,
+		MainnetGatewayAddress: gw.mainnetAddress.MarshalPB(),
 	}
 	if _, err := gw.contract.Call("ProcessDepositEventByTxHash", req, gw.signer, nil); err != nil {
 		gw.logger.Error("failed to commit ProcessDepositEventByTxHash tx", "err", err)
@@ -174,7 +185,8 @@ func (gw *DAppChainGateway) ProcessDepositEventByTxHash(events []*MainnetEvent) 
 func (gw *DAppChainGateway) ProcessEventBatch(events []*MainnetEvent) error {
 	// TODO: limit max message size to under 1MB
 	req := &ProcessEventBatchRequest{
-		Events: events,
+		Events:                events,
+		MainnetGatewayAddress: gw.mainnetAddress.MarshalPB(),
 	}
 
 	if _, err := gw.contract.Call("ProcessEventBatch", req, gw.signer, nil); err != nil {
@@ -185,9 +197,9 @@ func (gw *DAppChainGateway) ProcessEventBatch(events []*MainnetEvent) error {
 	return nil
 }
 
-func (gw *DAppChainGateway) PendingWithdrawals(mainnetGatewayAddr loom.Address) ([]*PendingWithdrawalSummary, error) {
+func (gw *DAppChainGateway) PendingWithdrawals() ([]*PendingWithdrawalSummary, error) {
 	req := &PendingWithdrawalsRequest{
-		MainnetGateway: mainnetGatewayAddr.MarshalPB(),
+		MainnetGateway: gw.mainnetAddress.MarshalPB(),
 	}
 	resp := PendingWithdrawalsResponse{}
 	if _, err := gw.contract.StaticCall("PendingWithdrawals", req, gw.caller, &resp); err != nil {
@@ -209,9 +221,9 @@ func (gw *DAppChainGateway) GetUnprocessedDepositTxHashes() (*UnprocessedDeposit
 	return &resp, nil
 }
 
-func (gw *DAppChainGateway) PendingWithdrawalsV2(mainnetGatewayAddr loom.Address) ([]*PendingWithdrawalSummary, error) {
+func (gw *DAppChainGateway) PendingWithdrawalsV2() ([]*PendingWithdrawalSummary, error) {
 	req := &PendingWithdrawalsRequest{
-		MainnetGateway: mainnetGatewayAddr.MarshalPB(),
+		MainnetGateway: gw.mainnetAddress.MarshalPB(),
 	}
 	resp := PendingWithdrawalsResponse{}
 	if _, err := gw.contract.StaticCall("PendingWithdrawalsV2", req, gw.caller, &resp); err != nil {
@@ -253,7 +265,8 @@ func (gw *DAppChainGateway) UnverifiedContractCreators() ([]*UnverifiedContractC
 
 func (gw *DAppChainGateway) VerifyContractCreators(verifiedCreators []*VerifiedContractCreator) error {
 	req := &VerifyContractCreatorsRequest{
-		Creators: verifiedCreators,
+		Creators:              verifiedCreators,
+		MainnetGatewayAddress: gw.mainnetAddress.MarshalPB(),
 	}
 	_, err := gw.contract.Call("VerifyContractCreators", req, gw.signer, nil)
 	if err != nil {
@@ -278,7 +291,7 @@ func (gw *DAppChainGateway) GetPendingWithdrawals() ([]*PendingWithdrawalSummary
 
 func (gw *DAppChainGateway) GetProcessedWithdrawals(mainnetGatewayAddr loom.Address) ([]*PendingWithdrawalSummary, error) {
 	req := &PendingWithdrawalsRequest{
-		MainnetGateway: mainnetGatewayAddr.MarshalPB(),
+		MainnetGateway: gw.mainnetAddress.MarshalPB(),
 		TxStatus:       tgtypes.TransferGatewayTxStatus_PROCESSED,
 	}
 	resp := PendingWithdrawalsResponse{}

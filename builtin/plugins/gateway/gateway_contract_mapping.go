@@ -212,14 +212,17 @@ func (gw *Gateway) UnverifiedContractCreators(ctx contract.StaticContext,
 	}, nil
 }
 
-func (gw *Gateway) VerifyContractCreators(ctx contract.Context,
-	req *VerifyContractCreatorsRequest) error {
+func (gw *Gateway) VerifyContractCreators(ctx contract.Context, req *VerifyContractCreatorsRequest) error {
 	if len(req.Creators) == 0 {
 		return ErrInvalidRequest
 	}
 
 	if ok, _ := ctx.HasPermission(verifyCreatorsPerm, []string{oracleRole}); !ok {
 		return ErrNotAuthorized
+	}
+
+	if err := validateMainnetGatewayAddress(ctx, req.MainnetGatewayAddress); err != nil {
+		return err
 	}
 
 	for _, creatorInfo := range req.Creators {
