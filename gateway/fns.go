@@ -3,8 +3,6 @@
 package gateway
 
 import (
-	"encoding/hex"
-
 	"github.com/gogo/protobuf/proto"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -27,10 +25,6 @@ type BatchSignWithdrawalFn struct {
 	// This could be different for every validator
 	mainnetPrivKey lcrypto.PrivateKey
 
-	// Store mapping between key to message
-	// This will later used in SubmitMultiSignedMessage
-	mappedMessage map[string][]byte
-
 	mainnetGatewayAddress loom.Address
 
 	logger *loom.Logger
@@ -38,14 +32,7 @@ type BatchSignWithdrawalFn struct {
 
 // TODO: Since GetMessageAndSignature & MapMessage return an error so should this, otherwise the
 //       Fn interface is oddly inconsistent.
-func (b *BatchSignWithdrawalFn) SubmitMultiSignedMessage(ctx []byte, key []byte, signatures [][]byte) {
-	// TODO: mappedMessage appears to grow without bound, shouldn't we remove the message once it's
-	//       submitted? And evict messages that haven't been processed every so often?
-	message := b.mappedMessage[hex.EncodeToString(key)]
-	if message == nil {
-		b.logger.Error("unable to find the message")
-		return
-	}
+func (b *BatchSignWithdrawalFn) SubmitMultiSignedMessage(ctx []byte, message []byte, signatures [][]byte) {
 
 	batchWithdrawalFnMessage := &BatchWithdrawalFnMessage{}
 
@@ -140,14 +127,13 @@ func (b *BatchSignWithdrawalFn) GetMessageAndSignature(ctx []byte) ([]byte, []by
 	return message, combinedSignature, nil
 }
 
-func (b *BatchSignWithdrawalFn) MapMessage(ctx, key, message []byte) error {
-	b.mappedMessage[hex.EncodeToString(key)] = message
-	return nil
-}
-
 func CreateBatchSignWithdrawalFn(isLoomcoinFn bool, chainID string, tgConfig *TransferGatewayConfig, signer auth.Signer) (*BatchSignWithdrawalFn, error) {
 	if tgConfig == nil || tgConfig.BatchSignFnConfig == nil {
 		return nil, errors.New("unable to start batch sign withdrawal Fn as configuration is invalid")
+	}
+
+	if !common.IsHexAddress(tgConfig.MainnetContractHexAddress) {
+		return nil, errors.New("invalid Mainnet Gateway address")
 	}
 
 	mainnetGatewayAddress := loom.Address{
@@ -188,7 +174,6 @@ func CreateBatchSignWithdrawalFn(isLoomcoinFn bool, chainID string, tgConfig *Tr
 	batchWithdrawalFn := &BatchSignWithdrawalFn{
 		goGateway:             goGateway,
 		mainnetPrivKey:        mainnetPrivateKey,
-		mappedMessage:         make(map[string][]byte),
 		mainnetGatewayAddress: mainnetGatewayAddress,
 		logger:                loom.NewLoomLogger(fnConfig.LogLevel, fnConfig.LogDestination),
 	}
