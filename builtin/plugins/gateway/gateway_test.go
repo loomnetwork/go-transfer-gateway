@@ -18,8 +18,8 @@ import (
 	lp "github.com/loomnetwork/go-loom/plugin"
 	contract "github.com/loomnetwork/go-loom/plugin/contractpb"
 	"github.com/loomnetwork/go-loom/types"
-	"github.com/loomnetwork/loomchain"
 	"github.com/loomnetwork/loomchain/builtin/plugins/address_mapper"
+	"github.com/loomnetwork/loomchain/features"
 	"github.com/loomnetwork/loomchain/plugin"
 	ssha "github.com/miguelmota/go-solidity-sha3"
 	"github.com/stretchr/testify/suite"
@@ -1028,8 +1028,8 @@ func (ts *GatewayTestSuite) TestWithdrawalRestrictions() {
 	)
 	require.NoError(err)
 
-	fakeCtx = fakeCtx.WithFeature(loomchain.TGCheckZeroAmount, true)
-	require.True(fakeCtx.FeatureEnabled(loomchain.TGCheckZeroAmount, false))
+	fakeCtx = fakeCtx.WithFeature(features.TGCheckZeroAmount, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGCheckZeroAmount, false))
 
 	// ERC20 withdrawal restriction test
 	// Deploy ERC20 Solidity contract to DAppChain EVM, mint some ERC20 and transfer to ts.dAppAddr
@@ -2186,8 +2186,8 @@ func (ts *GatewayTestSuite) TestCheckSeenTxHash() {
 	require.NoError(err)
 
 	// Create fake context with enabled flag set
-	fakeCtx = fakeCtx.WithFeature(loomchain.TGCheckTxHashFeature, true)
-	require.True(fakeCtx.FeatureEnabled(loomchain.TGCheckTxHashFeature, false))
+	fakeCtx = fakeCtx.WithFeature(features.TGCheckTxHashFeature, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGCheckTxHashFeature, false))
 
 	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
 		Events: []*MainnetEvent{

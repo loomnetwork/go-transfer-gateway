@@ -10,7 +10,7 @@ import (
 	"github.com/loomnetwork/go-loom/common/evmcompat"
 	contract "github.com/loomnetwork/go-loom/plugin/contractpb"
 	"github.com/loomnetwork/go-loom/types"
-	"github.com/loomnetwork/loomchain"
+	"github.com/loomnetwork/loomchain/features"
 	ssha "github.com/miguelmota/go-solidity-sha3"
 )
 
@@ -40,7 +40,7 @@ func (gw *Gateway) AddContractMapping(ctx contract.Context, req *AddContractMapp
 		// This gateway doesn't need a tx hash to verify contract ownership, but because the original
 		// version was released with this requirement we have to use a feature flag to safely switch
 		// over to the correct behavior.
-		if req.ForeignContractTxHash == nil && !ctx.FeatureEnabled(loomchain.TGBinanceContractMappingFeature, false) {
+		if req.ForeignContractTxHash == nil && !ctx.FeatureEnabled(features.TGBinanceContractMappingFeature, false) {
 			return ErrInvalidRequest
 		}
 	default:
@@ -89,7 +89,7 @@ func (gw *Gateway) AddContractMapping(ctx contract.Context, req *AddContractMapp
 		evmcompat.SignatureType_TRON,
 	}
 
-	if gw.Type == BinanceGateway && ctx.FeatureEnabled(loomchain.TGBinanceContractMappingFeature, false) {
+	if gw.Type == BinanceGateway && ctx.FeatureEnabled(features.TGBinanceContractMappingFeature, false) {
 		allowedSigTypes = append(allowedSigTypes, evmcompat.SignatureType_BINANCE)
 		hash = evmcompat.GenSHA256(
 			ssha.Address(common.BytesToAddress(req.ForeignContract.Local)),

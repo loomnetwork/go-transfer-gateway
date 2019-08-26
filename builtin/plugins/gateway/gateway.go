@@ -17,8 +17,8 @@ import (
 	contract "github.com/loomnetwork/go-loom/plugin/contractpb"
 	"github.com/loomnetwork/go-loom/types"
 	"github.com/loomnetwork/go-loom/util"
-	"github.com/loomnetwork/loomchain"
 	"github.com/loomnetwork/loomchain/builtin/plugins/address_mapper"
+	"github.com/loomnetwork/loomchain/features"
 	"github.com/pkg/errors"
 
 	"github.com/loomnetwork/go-loom/client"
@@ -459,7 +459,7 @@ func (gw *Gateway) ReplaceOwner(ctx contract.Context, req *AddOracleRequest) err
 }
 
 func (gw *Gateway) UpdateMainnetGatewayAddress(ctx contract.Context, req *UpdateMainnetGatewayRequest) error {
-	if ctx.FeatureEnabled(loomchain.TGVersion1_1, false) {
+	if ctx.FeatureEnabled(features.TGVersion1_1, false) {
 		return ErrGatewayVersion1_1FeatureDisabled
 	}
 
@@ -485,7 +485,7 @@ func removeOracle(ctx contract.Context, oracleAddr loom.Address) error {
 	ctx.RevokePermissionFrom(oracleAddr, submitEventsPerm, oracleRole)
 	ctx.RevokePermissionFrom(oracleAddr, signWithdrawalsPerm, oracleRole)
 	ctx.RevokePermissionFrom(oracleAddr, verifyCreatorsPerm, oracleRole)
-	if ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+	if ctx.FeatureEnabled(features.TGHotWalletFeature, false) {
 		ctx.RevokePermissionFrom(oracleAddr, clearInvalidTxHashesPerm, oracleRole)
 	}
 
@@ -510,7 +510,7 @@ func (gw *Gateway) GetOracles(ctx contract.StaticContext, req *GetOraclesRequest
 // ProcessDepositEventByTxHash tries to submit deposit events by tx hash
 // This method expects that TGCheckTxHashFeature is enabled on chain
 func (gw *Gateway) ProcessDepositEventByTxHash(ctx contract.Context, req *ProcessEventBatchRequest) error {
-	if !ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+	if !ctx.FeatureEnabled(features.TGHotWalletFeature, false) {
 		return ErrHotWalletFeatureDisabled
 	}
 
@@ -557,7 +557,7 @@ func (gw *Gateway) ProcessEventBatch(ctx contract.Context, req *ProcessEventBatc
 
 	blockCount := 0           // number of blocks that were actually processed in this batch
 	lastEthBlock := uint64(0) // the last block processed in this batch
-	checkTxHash := ctx.FeatureEnabled(loomchain.TGCheckTxHashFeature, false)
+	checkTxHash := ctx.FeatureEnabled(features.TGCheckTxHashFeature, false)
 
 	for _, ev := range req.Events {
 		// Events in the batch are expected to be ordered by block, so a batch should contain
@@ -681,7 +681,7 @@ func (gw *Gateway) handleDeposit(ctx contract.Context, ev *MainnetEvent, checkTx
 		tokenAddr = loom.UnmarshalAddressPB(payload.Deposit.TokenContract)
 	}
 
-	if ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+	if ctx.FeatureEnabled(features.TGHotWalletFeature, false) {
 		if err := clearDepositTxHashIfExists(ctx, ownerAddr); err != nil {
 			return err
 		}
@@ -745,7 +745,7 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 			return ErrInvalidRequest
 		}
 
-		if ctx.FeatureEnabled(loomchain.TGCheckZeroAmount, false) {
+		if ctx.FeatureEnabled(features.TGCheckZeroAmount, false) {
 			if req.TokenAmount.Value.Cmp(loom.NewBigUIntFromInt(0)) == 0 {
 				return ErrInvalidRequest
 			}
@@ -1091,7 +1091,7 @@ func (gw *Gateway) WithdrawETH(ctx contract.Context, req *WithdrawETHRequest) er
 // The user must have a mapping between their DAppChain address and their Eth address before they
 // can submit a tx hash.
 func (gw *Gateway) SubmitDepositTxHash(ctx contract.Context, req *SubmitDepositTxHashRequest) error {
-	if !ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+	if !ctx.FeatureEnabled(features.TGHotWalletFeature, false) {
 		return ErrHotWalletFeatureDisabled
 	}
 
@@ -1129,7 +1129,7 @@ func (gw *Gateway) SubmitDepositTxHash(ctx contract.Context, req *SubmitDepositT
 // ClearInvalidDepositTxHash is an Oracle only method that's called by Oracle to clear invalid
 // hot wallet deposit tx hashes submitted by users.
 func (gw *Gateway) ClearInvalidDepositTxHash(ctx contract.Context, req *ClearInvalidDepositTxHashRequest) error {
-	if !ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+	if !ctx.FeatureEnabled(features.TGHotWalletFeature, false) {
 		return ErrHotWalletFeatureDisabled
 	}
 
@@ -2412,7 +2412,7 @@ func addOracle(ctx contract.Context, oracleAddr loom.Address) error {
 	ctx.GrantPermissionTo(oracleAddr, submitEventsPerm, oracleRole)
 	ctx.GrantPermissionTo(oracleAddr, signWithdrawalsPerm, oracleRole)
 	ctx.GrantPermissionTo(oracleAddr, verifyCreatorsPerm, oracleRole)
-	if ctx.FeatureEnabled(loomchain.TGHotWalletFeature, false) {
+	if ctx.FeatureEnabled(features.TGHotWalletFeature, false) {
 		ctx.GrantPermissionTo(oracleAddr, clearInvalidTxHashesPerm, oracleRole)
 	}
 
@@ -2651,7 +2651,7 @@ func isTokenKindAllowed(gwType GatewayType, tokenKind TokenKind) bool {
 }
 
 func validateMainnetGatewayAddress(ctx contract.Context, mainnetAddress *types.Address) error {
-	if !ctx.FeatureEnabled(loomchain.TGVersion1_1, false) {
+	if !ctx.FeatureEnabled(features.TGVersion1_1, false) {
 		return nil
 	}
 
