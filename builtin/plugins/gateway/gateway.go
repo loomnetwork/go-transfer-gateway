@@ -815,6 +815,12 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 		return err
 	}
 
+	if ctx.FeatureEnabled(features.TGVersion1_2, false) {
+		if ownerEthAddr.ChainID != tokenEthAddr.ChainID {
+			return ErrInvalidRequest
+		}
+	}
+
 	tokenID := big.NewInt(0)
 	if req.TokenID != nil {
 		tokenID = req.TokenID.Value.Int
@@ -1025,6 +1031,12 @@ func (gw *Gateway) WithdrawETH(ctx contract.Context, req *WithdrawETHRequest) er
 		if err != nil {
 			emitWithdrawETHError(ctx, err.Error(), req)
 			return err
+		}
+	}
+
+	if ctx.FeatureEnabled(features.TGVersion1_2, false) {
+		if ownerEthAddr.ChainID != req.MainnetGateway.ChainId {
+			return ErrInvalidRequest
 		}
 	}
 
@@ -1268,6 +1280,12 @@ func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinR
 		if err != nil {
 			emitWithdrawLoomCoinError(ctx, err.Error(), req)
 			return err
+		}
+	}
+
+	if ctx.FeatureEnabled(features.TGVersion1_2, false) {
+		if ownerMainnetAddr.ChainID != req.TokenContract.ChainId {
+			return ErrInvalidRequest
 		}
 	}
 

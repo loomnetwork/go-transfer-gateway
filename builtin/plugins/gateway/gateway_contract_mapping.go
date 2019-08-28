@@ -12,6 +12,7 @@ import (
 	"github.com/loomnetwork/go-loom/types"
 	"github.com/loomnetwork/loomchain/features"
 	ssha "github.com/miguelmota/go-solidity-sha3"
+	"github.com/pkg/errors"
 )
 
 type (
@@ -56,6 +57,16 @@ func (gw *Gateway) AddContractMapping(ctx contract.Context, req *AddContractMapp
 	}
 	if foreignAddr.Compare(localAddr) == 0 {
 		return ErrInvalidRequest
+	}
+
+	if ctx.FeatureEnabled(features.TGVersion1_2, false) {
+		if localAddr.ChainID != ctx.Block().ChainID {
+			return ErrInvalidRequest
+		}
+
+		if !validateForeignChainID(gw.Type, foreignAddr.ChainID) {
+			return ErrInvalidRequest
+		}
 	}
 
 	localRec, err := ctx.ContractRecord(localAddr)
@@ -135,6 +146,16 @@ func (gw *Gateway) AddAuthorizedContractMapping(ctx contract.Context, req *AddCo
 	}
 	if foreignAddr.Compare(localAddr) == 0 {
 		return ErrInvalidRequest
+	}
+
+	if ctx.FeatureEnabled(features.TGVersion1_2, false) {
+		if localAddr.ChainID != ctx.Block().ChainID {
+			return ErrInvalidRequest
+		}
+
+		if !validateForeignChainID(gw.Type, foreignAddr.ChainID) {
+			return ErrInvalidRequest
+		}
 	}
 
 	state, err := loadState(ctx)
@@ -398,8 +419,13 @@ func confirmContractMapping(ctx contract.Context, pendingMappingKey []byte, mapp
 	return nil
 }
 
-// Returns the address of the DAppChain contract that corresponds to the given Ethereum address
+// Returns the address of the DAppChain contract that corresponds to the given foreign address
 func resolveToLocalContractAddr(ctx contract.StaticContext, foreignContractAddr loom.Address) (loom.Address, error) {
+	if ctx.FeatureEnabled(features.TGVersion1_2, false) {
+		if ctx.Block().ChainID == foreignContractAddr.ChainID {
+			return loom.Address{}, errors.New("invalid foreign contract address")
+		}
+	}
 	var mapping ContractAddressMapping
 	if err := ctx.Get(contractAddrMappingKey(foreignContractAddr), &mapping); err != nil {
 		return loom.Address{}, err
@@ -407,8 +433,13 @@ func resolveToLocalContractAddr(ctx contract.StaticContext, foreignContractAddr 
 	return loom.UnmarshalAddressPB(mapping.To), nil
 }
 
-// Returns the address of the Ethereum contract that corresponds to the given DAppChain address
+// Returns the address of the foreign contract that corresponds to the given DAppChain address
 func resolveToForeignContractAddr(ctx contract.StaticContext, localContractAddr loom.Address) (loom.Address, error) {
+	if ctx.FeatureEnabled(features.TGVersion1_2, false) {
+		if ctx.Block().ChainID != localContractAddr.ChainID {
+			return loom.Address{}, errors.New("invalid local contract address")
+		}
+	}
 	var mapping ContractAddressMapping
 	if err := ctx.Get(contractAddrMappingKey(localContractAddr), &mapping); err != nil {
 		return loom.Address{}, err
@@ -440,4 +471,17 @@ func contractMappingExists(ctx contract.StaticContext, foreignContractAddr, loca
 	}
 
 	return false
+}
+
+func validateForeignChainID(gwType GatewayType, chainID string) bool {
+	switch gwType {
+	case EthereumGateway, LoomCoinGateway:
+		return chainID == "eth"
+	case TronGateway:
+		return chainID == "tron"
+	case BinanceGateway:
+		return chainID == "binance"
+	default:
+		return false
+	}
 }

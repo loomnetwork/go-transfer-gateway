@@ -2230,10 +2230,16 @@ func (ts *GatewayTestSuite) TestCheckSeenTxHash() {
 	// TODO: Need to verify that the deposit wasn't processed, probably sufficient to check the last
 	//       processed eth block tracked by the Gateway contract hasn't changed.
 
+	fakeCtx = fakeCtx.WithFeature(features.TGVersion1_2, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGVersion1_2, false))
+
+	erc721 := newERC721Context(contract.WrapPluginContext(fakeCtx.WithAddress(ts.dAppAddr)), dappTokenAddr)
+	erc721.approve(gwHelper.Address, big.NewInt(123))
+
 	err = gwHelper.Contract.WithdrawToken(
 		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
 		&WithdrawTokenRequest{
-			TokenContract: ethTokenAddr.MarshalPB(),
+			TokenContract: dappTokenAddr.MarshalPB(),
 			TokenKind:     TokenKind_ERC721,
 			TokenID:       &types.BigUInt{Value: *loom.NewBigUIntFromInt(123)},
 			Recipient:     ts.ethAddr.MarshalPB(),
@@ -2519,7 +2525,7 @@ func (ts *GatewayTestSuite) TestBinanceBEP2Gateway() {
 	ownerAddr := ts.dAppAddr
 	oracleAddr := ts.dAppAddr2
 	czBinanceAddr := ts.binanceAddr
-	czBinanceDappAddr := ts.dAppAddr5
+	czBinanceDappAddr := ts.dAppAddr5 // owner of bep2 token on dappchain
 	fakeCtx := plugin.CreateFakeContextWithEVM(oracleAddr, loom.RootAddress("chain"))
 	_, err := deployAddressMapperContract(fakeCtx)
 	require.NoError(err)
