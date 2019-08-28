@@ -93,6 +93,7 @@ type (
 	ResubmitWithdrawalRequest       = tgtypes.TransferGatewayResubmitWithdrawalRequest
 	UpdateBinanceTransferFeeRequest = tgtypes.TransferGatewayUpdateBinanceTransferFeeRequest
 	UpdateMainnetGatewayRequest     = tgtypes.TransferGatewayUpdateMainnetGatewayRequest
+	SwitchMainnetGatewayRequest     = tgtypes.TransferGatewaySwitchMainnetGatewayRequest
 )
 
 var (
@@ -2584,4 +2585,51 @@ func (gw *Gateway) SetTransferFee(ctx contract.Context, req *UpdateBinanceTransf
 	state.TransferFee = req.TransferFee
 
 	return saveState(ctx, state)
+}
+
+func SwitchMainnetGateway(ctx contract.Context, req *SwitchMainnetGatewayRequest) error {
+	state, err := loadState(ctx)
+	if err != nil {
+		return err
+	}
+
+	if loom.UnmarshalAddressPB(state.Owner).Compare(ctx.Message().Sender) != 0 {
+		return ErrNotAuthorized
+	}
+
+	for _, ownerAddrPB := range state.TokenWithdrawers {
+		ownerAddr := loom.UnmarshalAddressPB(ownerAddrPB)
+		account, err := loadLocalAccount(ctx, ownerAddr)
+		if err != nil {
+			return err
+		}
+
+		if account.WithdrawalReceipt == nil {
+			return ErrMissingWithdrawalReceipt
+		}
+
+		// Resigns all the previously signed withdrawal receipts by removing existing signed receipts
+		// and creating new pending receipts that will be signed by the TG Oracles.
+		if account.WithdrawalReceipt.OracleSignature != nil {
+			account.WithdrawalReceipt.OracleSignature = nil
+		}
+
+		foreignAccount, err := loadForeignAccount(ctx, loom.UnmarshalAddressPB(account.WithdrawalReceipt.TokenOwner))
+		if err != nil {
+			return err
+		}
+
+		//Resets the withdrawal nonces in the DAppChain Gateway contract to zero
+		if foreignAccount.WithdrawalNonce != 0 {
+			foreignAccount.WithdrawalNonce = 0
+		}
+
+		//Update Eth mainnet gateway
+		state.MainnetGatewayAddress = req.MainnetAddress
+		err = saveState(ctx, state)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
