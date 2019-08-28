@@ -30,10 +30,11 @@ type (
 	UnverifiedContractCreator          = tgtypes.TransferGatewayUnverifiedContractCreator
 	VerifiedContractCreator            = tgtypes.TransferGatewayVerifiedContractCreator
 
-	ConfirmWithdrawalReceiptRequestV2  = tgtypes.TransferGatewayConfirmWithdrawalReceiptRequestV2
-	ClearInvalidDepositTxHashRequest   = tgtypes.TransferGatewayClearInvalidDepositTxHashRequest
-	UnprocessedDepositTxHashesResponse = tgtypes.TransferGatewayUnprocessedDepositTxHashesResponse
-	UnprocessedDepositTxHashesRequest  = tgtypes.TransferGatewayUnprocessedDepositTxHashesRequest
+	ConfirmWithdrawalReceiptRequestV2 = tgtypes.TransferGatewayConfirmWithdrawalReceiptRequestV2
+	// Hot Wallet
+	ClearInvalidHotWalletDepositTxHashRequest = tgtypes.TransferGatewayClearInvalidHotWalletDepositTxHashRequest
+	PendingHotWalletDepositTxHashesResponse   = tgtypes.TransferGatewayPendingHotWalletDepositTxHashesResponse
+	PendingHotWalletDepositTxHashesRequest    = tgtypes.TransferGatewayPendingHotWalletDepositTxHashesRequest
 )
 
 const (
@@ -59,6 +60,8 @@ type DAppChainGateway struct {
 	logger         *loom.Logger
 	signer         auth.Signer
 	mainnetAddress loom.Address
+	// Allow to set hot wallet address
+	HotWalletAddress loom.Address
 }
 
 func ConnectToDAppChainLoomCoinGateway(
@@ -155,27 +158,27 @@ func (gw *DAppChainGateway) LastMainnetBlockNum() (uint64, error) {
 	return resp.State.LastMainnetBlockNum, nil
 }
 
-func (gw *DAppChainGateway) ClearInvalidDepositTxHashes(txHashes [][]byte) error {
-	req := &ClearInvalidDepositTxHashRequest{
-		TxHashes:              txHashes,
-		MainnetGatewayAddress: gw.mainnetAddress.MarshalPB(),
+func (gw *DAppChainGateway) ClearInvalidHotWalletDepositTxHashes(txHashes [][]byte) error {
+	req := &ClearInvalidHotWalletDepositTxHashRequest{
+		TxHashes:                txHashes,
+		MainnetHotWalletAddress: gw.HotWalletAddress.MarshalPB(),
 	}
-	if _, err := gw.contract.Call("ClearInvalidDepositTxHash", req, gw.signer, nil); err != nil {
-		gw.logger.Error("failed to commit ClearInvalidLoomCoinDepositTxHash tx", "err", err)
+	if _, err := gw.contract.Call("ClearInvalidHotWalletDepositTxHash", req, gw.signer, nil); err != nil {
+		gw.logger.Error("failed to commit ClearInvalidHotWalletDepositTxHash", "err", err)
 		return err
 	}
 	gw.LastResponseTime = time.Now()
 	return nil
 }
 
-func (gw *DAppChainGateway) ProcessDepositEventByTxHash(events []*MainnetEvent) error {
+func (gw *DAppChainGateway) ProcessHotWalletEventBatch(events []*MainnetEvent) error {
 	// TODO: limit max message size to under 1MB
 	req := &ProcessEventBatchRequest{
-		Events:                events,
-		MainnetGatewayAddress: gw.mainnetAddress.MarshalPB(),
+		Events:                  events,
+		MainnetHotWalletAddress: gw.HotWalletAddress.MarshalPB(),
 	}
-	if _, err := gw.contract.Call("ProcessDepositEventByTxHash", req, gw.signer, nil); err != nil {
-		gw.logger.Error("failed to commit ProcessDepositEventByTxHash tx", "err", err)
+	if _, err := gw.contract.Call("ProcessHotWalletEventBatch", req, gw.signer, nil); err != nil {
+		gw.logger.Error("failed to commit ProcessHotWalletEventBatch", "err", err)
 		return err
 	}
 	gw.LastResponseTime = time.Now()
@@ -210,11 +213,11 @@ func (gw *DAppChainGateway) PendingWithdrawals() ([]*PendingWithdrawalSummary, e
 	return resp.Withdrawals, nil
 }
 
-func (gw *DAppChainGateway) GetUnprocessedDepositTxHashes() (*UnprocessedDepositTxHashesResponse, error) {
-	req := &UnprocessedDepositTxHashesRequest{}
-	resp := UnprocessedDepositTxHashesResponse{}
-	if _, err := gw.contract.StaticCall("UnprocessedDepositTxHashes", req, gw.caller, &resp); err != nil {
-		gw.logger.Error("failed to fetch unprocessed tx hashesfrom dappchain", "err", err)
+func (gw *DAppChainGateway) GetPendingHotWalletDepositTxHashes() (*PendingHotWalletDepositTxHashesResponse, error) {
+	req := &PendingHotWalletDepositTxHashesRequest{}
+	resp := PendingHotWalletDepositTxHashesResponse{}
+	if _, err := gw.contract.StaticCall("PendingHotWalletDepositTxHashes", req, gw.caller, &resp); err != nil {
+		gw.logger.Error("failed to fetch pending hot wallet tx hashes from DAppChain", "err", err)
 		return nil, err
 	}
 	gw.LastResponseTime = time.Now()

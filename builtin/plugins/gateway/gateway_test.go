@@ -2762,3 +2762,390 @@ func (ts *GatewayTestSuite) TestBinanceBNBTokenBEP2Gateway() {
 	require.Equal(int64(90000000), balanceAfter.Int64())
 
 }
+
+func (ts *GatewayTestSuite) TestGatewayHotWalletDepositWithdrawal() {
+	require := ts.Require()
+	fakeCtx := plugin.CreateFakeContextWithEVM(ts.dAppAddr, loom.RootAddress("chain"))
+	// Create fake context with enabled flag set
+	fakeCtx = fakeCtx.WithFeature(features.TGCheckTxHashFeature, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGCheckTxHashFeature, false))
+
+	addressMapper, err := deployAddressMapperContract(fakeCtx)
+	require.NoError(err)
+
+	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   ts.dAppAddr2.MarshalPB(),
+		Oracles: []*types.Address{ts.dAppAddr.MarshalPB()},
+	}, EthereumGateway)
+	require.NoError(err)
+
+	// Deploy ERC20 Solidity contract to DAppChain EVM
+	dappTokenAddr, err := deployTokenContract(fakeCtx, "SampleERC20Token", gwHelper.Address, ts.dAppAddr)
+	require.NoError(err)
+
+	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr, dappTokenAddr))
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
+	require.NoError(err)
+	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
+
+	txHash := []byte("0xdeadbeef")
+	tokenAmount := &types.BigUInt{Value: *loom.NewBigUIntFromInt(123)}
+	// Send token to Gateway Go contract
+	err = gwHelper.Contract.ProcessHotWalletEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 5,
+				Payload: &MainnetDepositEvent{
+					Deposit: &MainnetTokenDeposited{
+						TokenKind:     TokenKind_ERC20,
+						TokenContract: ethTokenAddr.MarshalPB(),
+						TokenOwner:    ts.ethAddr.MarshalPB(),
+						TokenAmount:   tokenAmount,
+						TxHash:        txHash,
+					},
+				},
+			},
+		},
+		MainnetHotWalletAddress: ethTokenAddr4.MarshalPB(),
+	})
+	require.EqualError(err, ErrHotWalletFeatureDisabled.Error())
+
+	fakeCtx = fakeCtx.WithFeature(features.TGHotWalletFeature, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGHotWalletFeature, false))
+	// Make Gateway happy about the address validation
+	require.NoError(gwHelper.UpdateMainnetHotWalletAddress(fakeCtx.WithSender(ts.dAppAddr2), ethTokenAddr4))
+
+	// User submits tx hash to Gateway
+
+	err = gwHelper.Contract.SubmitHotWalletDepositTxHash(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		&SubmitHotWalletDepositTxHashRequest{
+			TxHash: txHash,
+		},
+	)
+	require.NoError(err)
+
+	owner := ts.ethAddr
+
+	gotTxHashes, err := loadHotWalletDepositTxHashes(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		owner,
+	)
+	require.NoError(err)
+	require.Contains(gotTxHashes.TxHashes, txHash,
+		"Gateway should save hot wallet deposit tx hash using eth address")
+
+	err = gwHelper.Contract.SubmitHotWalletDepositTxHash(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		&SubmitHotWalletDepositTxHashRequest{
+			TxHash: txHash,
+		},
+	)
+	require.Error(err, "user should not be able to resubmit the same pending tx hash")
+
+	// User submits another tx hash to Gateway
+	txHash2 := []byte("0xbadbeef")
+	err = gwHelper.Contract.SubmitHotWalletDepositTxHash(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		&SubmitHotWalletDepositTxHashRequest{
+			TxHash: txHash2,
+		},
+	)
+	require.NoError(err, "user should be able to submit different tx hash")
+
+	pendingDeposits, err := gwHelper.Contract.PendingHotWalletDepositTxHashes(
+		gwHelper.ContractCtx(fakeCtx),
+		&PendingHotWalletDepositTxHashesRequest{},
+	)
+	require.NoError(err)
+	require.Contains(pendingDeposits.TxHashes, txHash,
+		"Gateway should return valid pending deposits")
+
+	err = gwHelper.Contract.ProcessHotWalletEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 5,
+				Payload: &MainnetDepositEvent{
+					Deposit: &MainnetTokenDeposited{
+						TokenKind:     TokenKind_ERC20,
+						TokenContract: ethTokenAddr.MarshalPB(),
+						TokenOwner:    ts.ethAddr.MarshalPB(),
+						TokenAmount:   tokenAmount,
+						TxHash:        txHash,
+					},
+				},
+			},
+			&MainnetEvent{
+				EthBlock: 10,
+				Payload: &MainnetDepositEvent{
+					Deposit: &MainnetTokenDeposited{
+						TokenKind:     TokenKind_ERC20,
+						TokenContract: ethTokenAddr.MarshalPB(),
+						TokenOwner:    ts.ethAddr.MarshalPB(),
+						TokenAmount:   tokenAmount,
+						TxHash:        txHash2,
+					},
+				},
+			},
+		},
+		MainnetHotWalletAddress: ethTokenAddr4.MarshalPB(),
+	})
+
+	erc20 := newERC20StaticContext(gwHelper.ContractCtx(fakeCtx), dappTokenAddr)
+	amount, err := erc20.balanceOf(ts.dAppAddr)
+	require.NoError(err)
+	require.Equal(new(big.Int).Add(tokenAmount.Value.Int, tokenAmount.Value.Int).String(), amount.String(),
+		"user should have token amount on Dapp the same amount he deposits to Gateway")
+
+	gotTxHashes, err = loadHotWalletDepositTxHashes(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		owner,
+	)
+	require.NoError(err)
+	require.NotContains(gotTxHashes.TxHashes, txHash,
+		"Gateway contract should clear deposit tx hash that has already processed")
+	require.Equal(0, len(gotTxHashes.TxHashes),
+		"Gateway contract should clear deposit tx hash that has already processed")
+
+	// Now test submit invalid tx hash
+	// Start from owner submit a new tx hash
+	txHash3 := []byte("0xaaaa")
+	err = gwHelper.Contract.SubmitHotWalletDepositTxHash(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		&SubmitHotWalletDepositTxHashRequest{
+			TxHash: txHash3,
+		},
+	)
+	require.NoError(err, "user should be able to submit different tx hash")
+	// More hashes
+	err = gwHelper.Contract.SubmitHotWalletDepositTxHash(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		&SubmitHotWalletDepositTxHashRequest{
+			TxHash: []byte("0xdeadbeef3"),
+		},
+	)
+	require.NoError(err, "user should be able to submit tx hash")
+	err = gwHelper.Contract.SubmitHotWalletDepositTxHash(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		&SubmitHotWalletDepositTxHashRequest{
+			TxHash: []byte("0xdeadbeef4"),
+		},
+	)
+	require.NoError(err, "user should be able to submit tx hash")
+	err = gwHelper.Contract.SubmitHotWalletDepositTxHash(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		&SubmitHotWalletDepositTxHashRequest{
+			TxHash: []byte("0xdeadbeef5"),
+		},
+	)
+	require.NoError(err, "user should be able to submit tx hash")
+
+	gotTxHashes, err = loadHotWalletDepositTxHashes(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		owner,
+	)
+	require.NoError(err)
+	require.Contains(gotTxHashes.TxHashes, txHash3,
+		"Gateway should save hot wallet deposit tx hash using eth address")
+	require.Contains(gotTxHashes.TxHashes, []byte("0xdeadbeef3"),
+		"Gateway should contain tx hash")
+	require.Contains(gotTxHashes.TxHashes, []byte("0xdeadbeef4"),
+		"Gateway should contain tx hash")
+	require.Contains(gotTxHashes.TxHashes, []byte("0xdeadbeef5"),
+		"Gateway should contain tx hash")
+
+	// Oracle submits the event
+	err = gwHelper.Contract.ClearInvalidHotWalletDepositTxHash(gwHelper.ContractCtx(fakeCtx), &ClearInvalidHotWalletDepositTxHashRequest{
+		TxHashes:                [][]byte{txHash3},
+		MainnetHotWalletAddress: ethTokenAddr4.MarshalPB(),
+	})
+	require.NoError(err)
+
+	gotTxHashes, err = loadHotWalletDepositTxHashes(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		owner,
+	)
+	require.NoError(err)
+	require.NotContains(gotTxHashes.TxHashes, txHash3,
+		"Gateway should not contain tx hash the is cleared")
+	require.Contains(gotTxHashes.TxHashes, []byte("0xdeadbeef3"),
+		"Gateway should contain tx hash")
+	require.Contains(gotTxHashes.TxHashes, []byte("0xdeadbeef4"),
+		"Gateway should contain tx hash")
+	require.Contains(gotTxHashes.TxHashes, []byte("0xdeadbeef5"),
+		"Gateway should contain tx hash")
+}
+
+func (ts *GatewayTestSuite) TestGatewayHotWalletDepositAndApproveTransfer() {
+	require := ts.Require()
+	fakeCtx := plugin.CreateFakeContextWithEVM(ts.dAppAddr, loom.RootAddress("chain"))
+	// Create fake context with enabled flag set
+	fakeCtx = fakeCtx.WithFeature(features.TGCheckTxHashFeature, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGCheckTxHashFeature, false))
+	fakeCtx = fakeCtx.WithFeature(features.TGHotWalletFeature, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGHotWalletFeature, false))
+
+	addressMapper, err := deployAddressMapperContract(fakeCtx)
+	require.NoError(err)
+
+	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   ts.dAppAddr2.MarshalPB(),
+		Oracles: []*types.Address{ts.dAppAddr.MarshalPB()},
+	}, EthereumGateway)
+	require.NoError(err)
+
+	// Make Gateway happy about the address validation
+	// This case Mainnet Gateway == Hot Wallet address
+	require.NoError(gwHelper.UpdateMainnetGatewayAddress(fakeCtx.WithSender(ts.dAppAddr2), ethTokenAddr4))
+	require.NoError(gwHelper.UpdateMainnetHotWalletAddress(fakeCtx.WithSender(ts.dAppAddr2), ethTokenAddr4))
+
+	// Deploy ERC20 Solidity contract to DAppChain EVM
+	dappTokenAddr, err := deployTokenContract(fakeCtx, "SampleERC20Token", gwHelper.Address, ts.dAppAddr)
+	require.NoError(err)
+	erc20 := newERC20StaticContext(gwHelper.ContractCtx(fakeCtx), dappTokenAddr)
+
+	require.NoError(gwHelper.AddContractMapping(fakeCtx, ethTokenAddr, dappTokenAddr))
+	sig, err := address_mapper.SignIdentityMapping(ts.ethAddr, ts.dAppAddr, ts.ethKey, sigType)
+	require.NoError(err)
+	require.NoError(addressMapper.AddIdentityMapping(fakeCtx, ts.ethAddr, ts.dAppAddr, sig))
+
+	tokenAmount := &types.BigUInt{Value: *loom.NewBigUIntFromInt(123)}
+	txHash := []byte("0xdeadbeef")
+
+	// # Use Case 1
+	// User does approve transfer and also submits tx hash via Hot Wallet
+	// Oracle submit event batch first and hot wallet event batch second
+
+	// 1. User does ApproveTransfer via Gateway but submits same tx hash to Gateway via Hot Wallet
+	err = gwHelper.Contract.SubmitHotWalletDepositTxHash(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		&SubmitHotWalletDepositTxHashRequest{
+			TxHash: txHash,
+		},
+	)
+	require.NoError(err, "user should be able to submit tx hash")
+
+	// 2. Oracle fetches tx hash and submit to Gateway
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 5,
+				Payload: &MainnetDepositEvent{
+					Deposit: &MainnetTokenDeposited{
+						TokenKind:     TokenKind_ERC20,
+						TokenContract: ethTokenAddr.MarshalPB(),
+						TokenOwner:    ts.ethAddr.MarshalPB(),
+						TokenAmount:   tokenAmount,
+						TxHash:        txHash,
+					},
+				},
+			},
+		},
+		MainnetGatewayAddress: ethTokenAddr4.MarshalPB(),
+	})
+	require.NoError(err)
+
+	// 3. Oracle fetches same tx hash and submit to Gateway via Hot Wallet
+	err = gwHelper.Contract.ProcessHotWalletEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 6,
+				Payload: &MainnetDepositEvent{
+					Deposit: &MainnetTokenDeposited{
+						TokenKind:     TokenKind_ERC20,
+						TokenContract: ethTokenAddr.MarshalPB(),
+						TokenOwner:    ts.ethAddr.MarshalPB(),
+						TokenAmount:   tokenAmount,
+						TxHash:        txHash,
+					},
+				},
+			},
+		},
+		MainnetHotWalletAddress: ethTokenAddr4.MarshalPB(),
+	})
+	require.NoError(err)
+
+	amount, err := erc20.balanceOf(ts.dAppAddr)
+	require.NoError(err)
+	require.Equal(tokenAmount.Value.Int.String(), amount.String(),
+		"user should have token amount on Dapp the same amount he deposits to Gateway")
+
+	owner := ts.ethAddr
+
+	gotTxHashes, err := loadHotWalletDepositTxHashes(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		owner,
+	)
+	require.NoError(err)
+	require.NotContains(gotTxHashes.TxHashes, txHash,
+		"Gateway should clear tx hash once Gateway processes tx")
+
+	// # Use Case 2
+	// User does approve transfer and also submits tx hash via Hot Wallet
+	// Oracle submit hot wallet event batch first and event batch second
+
+	txHash = []byte("0xdeadbeef2")
+
+	// 1. User does ApproveTransfer via Gateway but submits same tx hash to Gateway via Hot Wallet
+	err = gwHelper.Contract.SubmitHotWalletDepositTxHash(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		&SubmitHotWalletDepositTxHashRequest{
+			TxHash: txHash,
+		},
+	)
+	require.NoError(err, "user should be able to submit tx hash")
+
+	// 2. Oracle fetches tx hash and submit to Gateway via Hot Wallet
+	err = gwHelper.Contract.ProcessHotWalletEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 7,
+				Payload: &MainnetDepositEvent{
+					Deposit: &MainnetTokenDeposited{
+						TokenKind:     TokenKind_ERC20,
+						TokenContract: ethTokenAddr.MarshalPB(),
+						TokenOwner:    ts.ethAddr.MarshalPB(),
+						TokenAmount:   tokenAmount,
+						TxHash:        txHash,
+					},
+				},
+			},
+		},
+		MainnetHotWalletAddress: ethTokenAddr4.MarshalPB(),
+	})
+	require.NoError(err)
+
+	// 3. Oracle fetches same tx hash and submit to Gateway
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 8,
+				Payload: &MainnetDepositEvent{
+					Deposit: &MainnetTokenDeposited{
+						TokenKind:     TokenKind_ERC20,
+						TokenContract: ethTokenAddr.MarshalPB(),
+						TokenOwner:    ts.ethAddr.MarshalPB(),
+						TokenAmount:   tokenAmount,
+						TxHash:        txHash,
+					},
+				},
+			},
+		},
+		MainnetGatewayAddress: ethTokenAddr4.MarshalPB(),
+	})
+	require.NoError(err)
+
+	amount, err = erc20.balanceOf(ts.dAppAddr)
+	require.NoError(err)
+	// total amountt should be sum up from tx1 and tx2
+	require.Equal(amount.String(), new(big.Int).Add(tokenAmount.Value.Int, tokenAmount.Value.Int).String(),
+		"user should have token amount on Dapp the same amount he deposits to Gateway")
+
+	gotTxHashes, err = loadHotWalletDepositTxHashes(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ts.dAppAddr)),
+		owner,
+	)
+	require.NoError(err)
+	require.NotContains(gotTxHashes.TxHashes, txHash,
+		"Gateway should clear tx hash once Gateway processes tx")
+}

@@ -47,7 +47,7 @@ type MainnetContractCreationTx struct {
 	ContractAddress common.Address
 }
 
-func (c *MainnetClient) GetERC20DepositByTxHash(ctx context.Context, gatewayAddress common.Address, txHash common.Hash) ([]*ERC20DepositInfo, error) {
+func (c *MainnetClient) GetERC20DepositByTxHash(ctx context.Context, walletAddr common.Address, txHash common.Hash) ([]*ERC20DepositInfo, error) {
 	r := &struct {
 		Logs []types.Log `json:"logs"`
 	}{}
@@ -88,10 +88,10 @@ func (c *MainnetClient) GetERC20DepositByTxHash(ctx context.Context, gatewayAddr
 		if err != nil {
 			return nil, err
 		}
-		to := common.HexToAddress(result[1].(string))
+		to := common.HexToAddress(result[0].(string))
 
 		// We are going to capture deposits made only to our gateway contract
-		if !bytes.Equal(gatewayAddress.Bytes(), to.Bytes()) {
+		if !bytes.Equal(walletAddr.Bytes(), to.Bytes()) {
 			continue
 		}
 

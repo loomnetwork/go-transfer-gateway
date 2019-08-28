@@ -262,6 +262,20 @@ func (gc *testGatewayContract) AddContractMapping(ctx *plugin.FakeContextWithEVM
 	return nil
 }
 
+func (gc *testGatewayContract) UpdateMainnetGatewayAddress(ctx *plugin.FakeContextWithEVM, address loom.Address) error {
+	contractCtx := gc.ContractCtx(ctx)
+	return gc.Contract.UpdateMainnetGatewayAddress(contractCtx, &UpdateMainnetGatewayRequest{
+		MainnetGatewayAddress: address.MarshalPB(),
+	})
+}
+
+func (gc *testGatewayContract) UpdateMainnetHotWalletAddress(ctx *plugin.FakeContextWithEVM, address loom.Address) error {
+	contractCtx := gc.ContractCtx(ctx)
+	return gc.Contract.UpdateMainnetHotWalletAddress(contractCtx, &UpdateMainnetHotWalletRequest{
+		MainnetHotWalletAddress: address.MarshalPB(),
+	})
+}
+
 func deployGatewayContract(ctx *plugin.FakeContextWithEVM, genesis *InitRequest, gatewayType GatewayType) (*testGatewayContract, error) {
 	gwContract := &Gateway{
 		Type: gatewayType,

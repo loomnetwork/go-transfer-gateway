@@ -79,7 +79,7 @@ type TransferGatewayConfig struct {
 	// URI of Binance node the Oracle should connect to, for initializing Binance SDK client
 	BinanceNodeURI string
 
-	// When true the Oracle will verify tx hashes of hot wallet deposits.
+	// When this flag is enabled the Oracle will fetch deposit events from MainnetHotWalletAddress by tx hash.
 	VerifyHotWalletDeposits bool
 	// Generic mainnet hot wallet address in case mainnet does not have smart contract
 	MainnetHotWalletAddress string

@@ -114,6 +114,12 @@ type Status struct {
 	NumMainnetEventsFetched uint64 `json:",string"`
 	// Total number of Mainnet events fetched
 	NumMainnetEventsSubmitted uint64 `json:",string"`
+	// Hot Wallet
+	NumMainnetHotWalletEventsFetched          uint64 `json:",string"`
+	NumMainnetHotWalletEventsSubmitted        uint64 `json:",string"`
+	NumMainnetHotWalletInvalidTxHashFetched   uint64 `json:",string"`
+	NumMainnetHotWalletInvalidTxHashSubmitted uint64 `json:",string"`
+	MainnetHotWalletAddress                   string
 }
 
 type Oracle struct {
@@ -128,16 +134,22 @@ type Oracle struct {
 	// Used to sign tx/data sent to the DAppChain Gateway contract
 	signer auth.Signer
 	// Private key that should be used to sign tx/data sent to Mainnet Gateway contract
-	mainnetPrivateKey     lcrypto.PrivateKey
-	dAppChainPollInterval time.Duration
-	mainnetPollInterval   time.Duration
-	startupDelay          time.Duration
-	reconnectInterval     time.Duration
-	mainnetGatewayAddress loom.Address
+	mainnetPrivateKey       lcrypto.PrivateKey
+	dAppChainPollInterval   time.Duration
+	mainnetPollInterval     time.Duration
+	startupDelay            time.Duration
+	reconnectInterval       time.Duration
+	mainnetGatewayAddress   loom.Address
+	mainnetHotWalletAddress loom.Address
 
 	numMainnetBlockConfirmations uint64
 	numMainnetEventsFetched      uint64
 	numMainnetEventsSubmitted    uint64
+
+	numMainnetHotWalletEventsFetched          uint64
+	numMainnetHotWalletEventsSubmitted        uint64
+	numMainnetHotWalletInvalidTxHashFetched   uint64
+	numMainnetHotWalletInvalidTxHashSubmitted uint64
 
 	statusMutex sync.RWMutex
 	status      Status
@@ -211,6 +223,14 @@ func createOracle(cfg *TransferGatewayConfig, chainID string,
 		return nil, errors.New("invalid Mainnet Gateway address")
 	}
 
+	var mainnetHotWalletAddress common.Address
+	if cfg.VerifyHotWalletDeposits {
+		if !common.IsHexAddress(cfg.MainnetHotWalletAddress) {
+			return nil, errors.Errorf("invalid Mainnet Hot Wallet Address: %s", cfg.MainnetHotWalletAddress)
+		}
+		mainnetHotWalletAddress = common.HexToAddress(cfg.MainnetHotWalletAddress)
+	}
+
 	withdrawerBlacklist, err := cfg.GetWithdrawerAddressBlacklist()
 	if err != nil {
 		return nil, err
@@ -235,10 +255,15 @@ func createOracle(cfg *TransferGatewayConfig, chainID string,
 			ChainID: foreignChainID,
 			Local:   common.HexToAddress(cfg.MainnetContractHexAddress).Bytes(),
 		},
+		mainnetHotWalletAddress: loom.Address{
+			ChainID: foreignChainID,
+			Local:   mainnetHotWalletAddress.Bytes(),
+		},
 		status: Status{
-			Version:               loomchain.FullVersion(),
-			OracleAddress:         address.String(),
-			MainnetGatewayAddress: cfg.MainnetContractHexAddress,
+			Version:                 loomchain.FullVersion(),
+			OracleAddress:           address.String(),
+			MainnetGatewayAddress:   cfg.MainnetContractHexAddress,
+			MainnetHotWalletAddress: cfg.MainnetHotWalletAddress,
 		},
 
 		metrics:             NewMetrics(metricSubsystem),
@@ -335,6 +360,9 @@ func (orc *Oracle) connect() error {
 		default:
 			return errors.Errorf("invalid gateway type %v", orc.gatewayType)
 		}
+
+		// set hot wallet address
+		orc.goGateway.HotWalletAddress = orc.mainnetHotWalletAddress
 	}
 	return nil
 }
@@ -426,16 +454,7 @@ func (orc *Oracle) pollMainnet() error {
 	//       and failing to verify hot wallet deposits shouldn't prevent the Oracle from submitting
 	//       fetched events. The two tasks shouldn't be interdependent in any way.
 	if orc.cfg.VerifyHotWalletDeposits {
-		solLoomAddr, err := orc.solGateway.LoomAddress(&bind.CallOpts{
-			Context: context.TODO(),
-		})
-		if err != nil {
-			return err
-		}
-
-		if err := orc.processEventsByTxHash(
-			latestBlock, common.HexToAddress(orc.cfg.MainnetContractHexAddress), solLoomAddr,
-		); err != nil {
+		if err := orc.processHotWalletEvents(latestBlock); err != nil {
 			return err
 		}
 	}
@@ -469,69 +488,6 @@ func (orc *Oracle) pollDAppChain() error {
 		}
 	}
 	return nil
-}
-
-func (orc *Oracle) getERC20DepositFromTxHash(currentConfirmedBlock uint64, gatewayAddr common.Address, solLoomAddr common.Address) ([]*MainnetEvent, [][]byte, error) {
-	unprocessedTxHashesResponse, err := orc.goGateway.GetUnprocessedDepositTxHashes()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	unprocessedTxHashes := unprocessedTxHashesResponse.TxHashes
-
-	mainnetEvents := make([]*MainnetEvent, 0, len(unprocessedTxHashes))
-	invalidTxHashes := make([][]byte, 0, len(unprocessedTxHashes))
-
-	for _, unprocessedTxHash := range unprocessedTxHashes {
-		// Fetch All ERC20 deposits made to gateway contract
-		erc20Deposits, err := orc.ethClient.GetERC20DepositByTxHash(context.TODO(), gatewayAddr, common.BytesToHash(unprocessedTxHash))
-		if err != nil {
-			if err == ethereum.NotFound {
-				invalidTxHashes = append(invalidTxHashes, unprocessedTxHash)
-				continue
-			}
-			return nil, nil, err
-		}
-
-		if len(erc20Deposits) == 0 {
-			invalidTxHashes = append(invalidTxHashes, unprocessedTxHash)
-			continue
-		}
-
-		// In gateway contract only one deposit can be associated with one tx hash
-		// So, let's only take first element of deposit array.
-		erc20Deposit := erc20Deposits[0]
-
-		var tokenKind tgtypes.TransferGatewayTokenKind
-
-		// If event is originated from loomcoin ERC20 contract, then set
-		// token kind to LoomCoin, else set token kind to ERC20
-		if erc20Deposit.ERC20Contract.Hex() == solLoomAddr.Hex() {
-			tokenKind = TokenKind_LoomCoin
-		} else {
-			tokenKind = TokenKind_ERC20
-		}
-
-		// if we didnt receive enough block confirmation
-		// or tx hash is from block, we havent reached yet, Ignore it.
-		if erc20Deposit.BlockNumber > currentConfirmedBlock {
-			continue
-		}
-
-		mainnetEvents = append(mainnetEvents, &MainnetEvent{
-			EthBlock: erc20Deposit.BlockNumber,
-			Payload: &MainnetDepositEvent{
-				Deposit: &MainnetTokenDeposited{
-					TokenKind:   tokenKind,
-					TokenOwner:  loom.Address{ChainID: "eth", Local: erc20Deposit.From.Bytes()}.MarshalPB(),
-					TokenAmount: &ltypes.BigUInt{Value: *loom.NewBigUInt(erc20Deposit.Amount)},
-					TxHash:      unprocessedTxHash,
-				},
-			},
-		})
-	}
-
-	return mainnetEvents, invalidTxHashes, nil
 }
 
 func (orc *Oracle) filterSeenWithdrawals(withdrawals []*PendingWithdrawalSummary) []*PendingWithdrawalSummary {
@@ -729,23 +685,76 @@ func (orc *Oracle) getLatestEthBlockNumber() (uint64, error) {
 	return 0, errors.Errorf("invalid gateway type %v", orc.gatewayType)
 }
 
-func (orc *Oracle) processEventsByTxHash(currentConfirmedBlock uint64, gatewayAddr common.Address, solLoomAddr common.Address) error {
-	depositEvents, invalidTxHashes, err := orc.getERC20DepositFromTxHash(currentConfirmedBlock, gatewayAddr, solLoomAddr)
+func (orc *Oracle) processHotWalletEvents(currentConfirmedBlock uint64) error {
+	event, invalidTxHashes, err := orc.fetchHotWalletEvents(currentConfirmedBlock)
 	if err != nil {
 		return err
 	}
 
 	if len(invalidTxHashes) > 0 {
-		if err := orc.goGateway.ClearInvalidDepositTxHashes(invalidTxHashes); err != nil {
+		orc.numMainnetHotWalletInvalidTxHashFetched = orc.numMainnetHotWalletInvalidTxHashFetched + uint64(len(invalidTxHashes))
+		orc.updateStatus()
+
+		if err := orc.goGateway.ClearInvalidHotWalletDepositTxHashes(invalidTxHashes); err != nil {
 			return err
 		}
+
+		orc.numMainnetHotWalletInvalidTxHashSubmitted = orc.numMainnetHotWalletInvalidTxHashSubmitted + uint64(len(invalidTxHashes))
+		orc.updateStatus()
 	}
 
-	if err := orc.goGateway.ProcessDepositEventByTxHash(depositEvents); err != nil {
-		return err
+	if len(event) > 0 {
+		orc.numMainnetHotWalletEventsFetched = orc.numMainnetHotWalletEventsFetched + uint64(len(event))
+		orc.updateStatus()
+
+		if err := orc.goGateway.ProcessHotWalletEventBatch(event); err != nil {
+			return err
+		}
+
+		orc.numMainnetHotWalletEventsSubmitted = orc.numMainnetHotWalletEventsSubmitted + uint64(len(event))
+		orc.updateStatus()
 	}
 
 	return nil
+}
+
+// fetchHotWalletEvents fetches hot wallet deposits by tx hash and invalid tx hash
+func (orc *Oracle) fetchHotWalletEvents(currentConfirmedBlock uint64) ([]*MainnetEvent, [][]byte, error) {
+	var erc20Deposits []*mainnetEventInfo
+	var invalidERC20DepositTxHashes [][]byte
+	var err error
+
+	switch orc.gatewayType {
+	case gwcontract.EthereumGateway, gwcontract.LoomCoinGateway:
+		erc20Deposits, invalidERC20DepositTxHashes, err = orc.fetchHotWalletERC20Deposits(currentConfirmedBlock)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	events := make(
+		[]*mainnetEventInfo, 0,
+		len(erc20Deposits),
+	)
+
+	events = append(events, erc20Deposits...)
+
+	sortMainnetEvents(events)
+
+	sortedEvents := make([]*MainnetEvent, len(events))
+	for i, event := range events {
+		sortedEvents[i] = event.Event
+	}
+
+	if len(sortedEvents) > 0 || len(invalidERC20DepositTxHashes) > 0 {
+		orc.logger.Debug("fetched Mainnet HotWallet events",
+			"currentConfirmedBlock", currentConfirmedBlock,
+			"hotwallet-erc20-deposits", len(sortedEvents),
+			"hotwallet-erc20-deposits-invalid-tx-hashes", len(invalidERC20DepositTxHashes),
+		)
+	}
+
+	return sortedEvents, invalidERC20DepositTxHashes, nil
 }
 
 // Fetches all relevant events from an Ethereum node from startBlock to endBlock (inclusive)
@@ -1356,6 +1365,109 @@ func (orc *Oracle) fetchTronTokenWithdrawals(filterOpts *bind.FilterOpts) ([]*ma
 	}
 	numEvents = len(events)
 	return events, nil
+}
+
+func (orc *Oracle) fetchHotWalletERC20Deposits(currentConfirmedBlock uint64) ([]*mainnetEventInfo, [][]byte, error) {
+	var err error
+	var numEvents int
+	var numInvalidTxHash int
+	defer func(begin time.Time) {
+		orc.metrics.MethodCalled(begin, "fetchHotWalletERC20Deposits", err)
+		orc.metrics.FetchedMainnetEvents(numEvents, "HotWalletERC20Deposit")
+		orc.metrics.FetchedMainnetEvents(numInvalidTxHash, "InvalidWalletERC20DepositTxHash")
+	}(time.Now())
+
+	var solLoomAddr common.Address
+	opts := bind.CallOpts{
+		Context: context.TODO(),
+	}
+	solLoomAddr, err = orc.solGateway.LoomAddress(&opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	mainnetHotWalletAddress := common.HexToAddress(orc.mainnetHotWalletAddress.Local.Hex())
+
+	resp, err := orc.goGateway.GetPendingHotWalletDepositTxHashes()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	pendingTxHashes := resp.TxHashes
+	events := make([]*mainnetEventInfo, 0, len(pendingTxHashes))
+	invalidTxHashes := make([][]byte, 0, len(pendingTxHashes))
+
+	for _, txHash := range pendingTxHashes {
+		// Fetch All ERC20 deposits made to gateway contract
+		erc20Deposits, err := orc.ethClient.GetERC20DepositByTxHash(context.TODO(), mainnetHotWalletAddress, common.BytesToHash(txHash))
+		if err != nil {
+			if err == ethereum.NotFound {
+				invalidTxHashes = append(invalidTxHashes, txHash)
+				continue
+			}
+			return nil, nil, err
+		}
+
+		if len(erc20Deposits) == 0 {
+			invalidTxHashes = append(invalidTxHashes, txHash)
+			continue
+		}
+
+		if len(erc20Deposits) > 1 {
+			orc.logger.Error("Got more than one deposit",
+				"txHash", common.BytesToHash(txHash).Hex(),
+				"gatewayAddress", mainnetHotWalletAddress.Hex(),
+				"depositNum", len(erc20Deposits),
+			)
+		}
+
+		// In gateway contract only one deposit can be associated with one tx hash
+		// So, let's only take first element of deposit array.
+		erc20Deposit := erc20Deposits[0]
+
+		var tokenKind tgtypes.TransferGatewayTokenKind
+
+		// If event is originated from loomcoin ERC20 contract, then set
+		// token kind to LoomCoin, else set token kind to ERC20
+		if erc20Deposit.ERC20Contract.Hex() == solLoomAddr.Hex() {
+			tokenKind = TokenKind_LoomCoin
+		} else {
+			tokenKind = TokenKind_ERC20
+		}
+
+		// if we didnt receive enough block confirmation
+		// or tx hash is from block, we havent reached yet, Ignore it.
+		if erc20Deposit.BlockNumber > currentConfirmedBlock {
+			continue
+		}
+
+		// if the amount is nil, consider it as an invalid one.
+		if erc20Deposit.Amount == nil {
+			invalidTxHashes = append(invalidTxHashes, txHash)
+			continue
+		}
+
+		events = append(events, &mainnetEventInfo{
+			BlockNum: erc20Deposit.BlockNumber,
+			TxIdx:    erc20Deposit.TxIndex,
+			Event: &MainnetEvent{
+				EthBlock: erc20Deposit.BlockNumber,
+				Payload: &MainnetDepositEvent{
+					Deposit: &MainnetTokenDeposited{
+						TokenKind:     tokenKind,
+						TokenContract: loom.Address{ChainID: "eth", Local: erc20Deposit.ERC20Contract.Bytes()}.MarshalPB(),
+						TokenOwner:    loom.Address{ChainID: "eth", Local: erc20Deposit.From.Bytes()}.MarshalPB(),
+						TokenAmount:   &ltypes.BigUInt{Value: *loom.NewBigUInt(erc20Deposit.Amount)},
+						TxHash:        txHash,
+					},
+				},
+			},
+		})
+	}
+
+	numEvents = len(events)
+	numInvalidTxHash = len(invalidTxHashes)
+
+	return events, invalidTxHashes, nil
 }
 
 func (orc *Oracle) signTransferGatewayWithdrawal(hash []byte) ([]byte, error) {
