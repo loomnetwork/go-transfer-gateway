@@ -194,7 +194,9 @@ func (ts *GatewayTestSuite) TestEmptyEventBatchProcessing() {
 
 func (ts *GatewayTestSuite) TestOwnerPermissions() {
 	require := ts.Require()
-	fakeCtx := lp.CreateFakeContext(ts.dAppAddr, loom.RootAddress("chain"))
+	fakeCtx := plugin.CreateFakeContextWithEVM(ts.dAppAddr, loom.RootAddress("chain"))
+	fakeCtx = fakeCtx.WithFeature(features.TGVersion1_1, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGVersion1_1, false))
 
 	ownerAddr := ts.dAppAddr
 	oracleAddr := ts.dAppAddr2
@@ -2984,6 +2986,8 @@ func (ts *GatewayTestSuite) TestGatewayHotWalletDepositAndApproveTransfer() {
 	require.True(fakeCtx.FeatureEnabled(features.TGCheckTxHashFeature, false))
 	fakeCtx = fakeCtx.WithFeature(features.TGHotWalletFeature, true)
 	require.True(fakeCtx.FeatureEnabled(features.TGHotWalletFeature, false))
+	fakeCtx = fakeCtx.WithFeature(features.TGVersion1_1, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGVersion1_1, false))
 
 	addressMapper, err := deployAddressMapperContract(fakeCtx)
 	require.NoError(err)

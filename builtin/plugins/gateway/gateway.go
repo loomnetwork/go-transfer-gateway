@@ -132,6 +132,7 @@ const (
 	withdrawETHTopic                    = "event:WithdrawETH"
 	withdrawLoomCoinTopic               = "event:WithdrawLoomCoin"
 	withdrawTokenTopic                  = "event:WithdrawToken"
+	migratedReceiptTopic                = "event:MigratedReceipt"
 	mainnetDepositEventTopic            = "event:MainnetDepositEvent"
 	mainnetWithdrawalEventTopic         = "event:MainnetWithdrawalEvent"
 	mainnetProcessEventErrorTopic       = "event:MainnetProcessEventError"
@@ -437,7 +438,7 @@ func (gw *Gateway) ReplaceOwner(ctx contract.Context, req *AddOracleRequest) err
 }
 
 func (gw *Gateway) UpdateMainnetGatewayAddress(ctx contract.Context, req *UpdateMainnetGatewayRequest) error {
-	if ctx.FeatureEnabled(features.TGVersion1_1, false) {
+	if !ctx.FeatureEnabled(features.TGVersion1_1, false) {
 		return ErrGatewayVersion1_1FeatureDisabled
 	}
 
@@ -1436,6 +1437,10 @@ func (gw *Gateway) PendingWithdrawalsV2(
 		return nil, ErrInvalidRequest
 	}
 
+	if err := validateMainnetGatewayAddress(ctx, req.MainnetGateway); err != nil {
+		return nil, err
+	}
+
 	state, err := loadState(ctx)
 	if err != nil {
 		return nil, err
@@ -2401,7 +2406,7 @@ func isTokenKindAllowed(gwType GatewayType, tokenKind TokenKind) bool {
 	return false
 }
 
-func validateMainnetGatewayAddress(ctx contract.Context, mainnetAddress *types.Address) error {
+func validateMainnetGatewayAddress(ctx contract.StaticContext, mainnetAddress *types.Address) error {
 	if !ctx.FeatureEnabled(features.TGVersion1_1, false) {
 		return nil
 	}
@@ -2608,10 +2613,24 @@ func SwitchMainnetGateway(ctx contract.Context, req *SwitchMainnetGatewayRequest
 			return ErrMissingWithdrawalReceipt
 		}
 
-		// Resigns all the previously signed withdrawal receipts by removing existing signed receipts
-		// and creating new pending receipts that will be signed by the TG Oracles.
-		if account.WithdrawalReceipt.OracleSignature != nil {
-			account.WithdrawalReceipt.OracleSignature = nil
+		originalReceiptBytes, err := proto.Marshal(account.WithdrawalReceipt)
+		if err != nil {
+			return err
+		}
+
+		// Reset withdrawal nonce in receipt to zero
+		account.WithdrawalReceipt.WithdrawalNonce = 0
+
+		// Update mainnet address for Token kind ETH
+		if account.WithdrawalReceipt.TokenKind == TokenKind_ETH {
+			account.WithdrawalReceipt.TokenContract = req.MainnetAddress
+		}
+
+		// Force all receipts to be resigned after the migration
+		account.WithdrawalReceipt.OracleSignature = nil
+
+		if err := saveLocalAccount(ctx, account); err != nil {
+			return err
 		}
 
 		foreignAccount, err := loadForeignAccount(ctx, loom.UnmarshalAddressPB(account.WithdrawalReceipt.TokenOwner))
@@ -2619,17 +2638,18 @@ func SwitchMainnetGateway(ctx contract.Context, req *SwitchMainnetGatewayRequest
 			return err
 		}
 
-		//Resets the withdrawal nonces in the DAppChain Gateway contract to zero
-		if foreignAccount.WithdrawalNonce != 0 {
-			foreignAccount.WithdrawalNonce = 0
-		}
+		// Reset the withdrawal nonce on the foreign account to match the one in the new Ethereum Gateway
+		foreignAccount.WithdrawalNonce = 0
 
-		//Update Eth mainnet gateway
-		state.MainnetGatewayAddress = req.MainnetAddress
-		err = saveState(ctx, state)
-		if err != nil {
+		if err := saveForeignAccount(ctx, foreignAccount); err != nil {
 			return err
 		}
+
+		ctx.EmitTopics(originalReceiptBytes, migratedReceiptTopic)
 	}
-	return nil
+
+	// Update Eth mainnet gateway
+	state.MainnetGatewayAddress = req.MainnetAddress
+
+	return saveState(ctx, state)
 }
