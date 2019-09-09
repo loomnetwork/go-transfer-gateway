@@ -2633,19 +2633,21 @@ func SwitchMainnetGateway(ctx contract.Context, req *SwitchMainnetGatewayRequest
 			return err
 		}
 
-		foreignAccount, err := loadForeignAccount(ctx, loom.UnmarshalAddressPB(account.WithdrawalReceipt.TokenOwner))
-		if err != nil {
+		ctx.EmitTopics(originalReceiptBytes, migratedReceiptTopic)
+	}
+
+	// Range over all foreign accounts
+	for _, entry := range ctx.Range(foreignAccountKeyPrefix) {
+		var foreignAccount ForeignAccount
+		if err := proto.Unmarshal(entry.Value, &foreignAccount); err != nil {
 			return err
 		}
-
 		// Reset the withdrawal nonce on the foreign account to match the one in the new Ethereum Gateway
 		foreignAccount.WithdrawalNonce = 0
 
-		if err := saveForeignAccount(ctx, foreignAccount); err != nil {
+		if err := saveForeignAccount(ctx, &foreignAccount); err != nil {
 			return err
 		}
-
-		ctx.EmitTopics(originalReceiptBytes, migratedReceiptTopic)
 	}
 
 	// Update Eth mainnet gateway
