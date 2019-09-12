@@ -35,6 +35,9 @@ type (
 	ClearInvalidHotWalletDepositTxHashRequest = tgtypes.TransferGatewayClearInvalidHotWalletDepositTxHashRequest
 	PendingHotWalletDepositTxHashesResponse   = tgtypes.TransferGatewayPendingHotWalletDepositTxHashesResponse
 	PendingHotWalletDepositTxHashesRequest    = tgtypes.TransferGatewayPendingHotWalletDepositTxHashesRequest
+	WithdrawalReceiptRequest                  = tgtypes.TransferGatewayWithdrawalReceiptRequest
+	WithdrawalReceiptResponse                 = tgtypes.TransferGatewayWithdrawalReceiptResponse
+	WithdrawalReceipt                         = tgtypes.TransferGatewayWithdrawalReceipt
 )
 
 const (
@@ -313,4 +316,17 @@ func (gw *DAppChainGateway) UpdateWithdrawalReceipt(req *ConfirmWithdrawalReceip
 	}
 	gw.LastResponseTime = time.Now()
 	return nil
+}
+
+func (gw *DAppChainGateway) GetWithdrawalReceipt(owner loom.Address) (*WithdrawalReceipt, error) {
+	req := &WithdrawalReceiptRequest{
+		Owner: owner.MarshalPB(),
+	}
+	resp := WithdrawalReceiptResponse{}
+	if _, err := gw.contract.StaticCall("WithdrawalReceipt", req, gw.caller, &resp); err != nil {
+		gw.logger.Error("failed to fetch withdrawal receipt from DAppChain", "err", err)
+		return nil, err
+	}
+	gw.LastResponseTime = time.Now()
+	return resp.Receipt, nil
 }

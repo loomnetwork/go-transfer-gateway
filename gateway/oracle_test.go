@@ -3,10 +3,13 @@
 package gateway
 
 import (
+	"os"
+	"path"
 	"testing"
 	"time"
 
 	loom "github.com/loomnetwork/go-loom"
+	dbm "github.com/loomnetwork/loomchain/db"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,4 +70,259 @@ func TestTransferGatewayOracleConfigWithdrawerAddressBlacklist(t *testing.T) {
 	require.Equal(t, 2, len(blacklist))
 	require.Equal(t, 0, addr1.Compare(blacklist[0]))
 	require.Equal(t, 0, addr2.Compare(blacklist[1]))
+}
+
+func TestTransferGatewayOracleWithdrawalLimit(t *testing.T) {
+	dbName := "oracle-test"
+	// make sure we start up wit fresh data
+	require.NoError(t, os.RemoveAll(path.Join("testdata", dbName+".db")))
+
+	db, err := dbm.LoadDB(
+		"goleveldb",
+		dbName,
+		"testdata",
+		256,
+		4,
+		false,
+	)
+	require.NoError(t, err)
+	// FIXME: doesn't actually work
+	defer os.RemoveAll(path.Join("testdata", dbName+".db"))
+
+	orc := Oracle{
+		cfg: TransferGatewayConfig{
+			WithdrawalLimitsEnabled: true,
+		},
+		db:                                 db,
+		maxTotalDailyWithdrawalAmount:      sciNot(10, 18),
+		maxPerAccountDailyWithdrawalAmount: sciNot(5, 18),
+	}
+
+	t.Run("Total daily withdrawal", func(t *testing.T) {
+		state, err := loadState(orc.db)
+		require.NoError(t, err)
+
+		// Use fixed time to avoid timing dependency issue
+		ts1 := time.Date(2019, 8, 11, 0, 0, 0, 0, time.UTC)
+		limitReached, err := orc.verifyTotalDailyWithdrawal(ts1, state, sciNot(6, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+
+		limitReached, err = orc.verifyTotalDailyWithdrawal(ts1, state, sciNot(20, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+
+		ts2 := ts1.Add(4 * time.Hour)
+		require.NoError(t, orc.updateOracleState(ts2, state, sciNot(6, 18).Int))
+
+		state, err = loadState(orc.db)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(6, 18).Int.String(),
+			state.TotalWithdrawalAmount.Value.Int.String(),
+			"Oracle should update the state")
+
+		ts3 := ts1.Add(5 * time.Hour)
+		limitReached, err = orc.verifyTotalDailyWithdrawal(ts3, state, sciNot(7, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+
+		ts4 := ts1.Add(29 * time.Hour) // period should reset
+		limitReached, err = orc.verifyTotalDailyWithdrawal(ts4, state, sciNot(7, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+
+		limitReached, err = orc.verifyTotalDailyWithdrawal(ts4, state, sciNot(20, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+
+		require.NoError(t, orc.updateOracleState(ts4, state, sciNot(7, 18).Int))
+		state, err = loadState(orc.db)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(7, 18).Int.String(),
+			state.TotalWithdrawalAmount.Value.Int.String(),
+			"Oracle should update the state")
+	})
+
+	t.Run("Total per account (local) withdrawal", func(t *testing.T) {
+		addr1 := loom.MustParseAddress("chain:0xb16a379ec18d4093666f8f38b11a3071c920207d")
+		addr2 := loom.MustParseAddress("chain:0x5cecd1f7261e1f4c684e297be3edf03b825e01c5")
+
+		// Use fixed time to avoid timing dependency issue
+		ts1 := time.Date(2019, 9, 12, 7, 20, 0, 0, time.UTC)
+		localAccount, err := loadAccount(orc.db, addr1)
+		require.NoError(t, err)
+		limitReached, err := orc.verifyAccountDailyWithdrawal(ts1, localAccount, sciNot(3, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+
+		localAccount2, err := loadAccount(orc.db, addr2)
+		require.NoError(t, err)
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts1, localAccount2, sciNot(4, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts1, localAccount, sciNot(10, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts1, localAccount2, sciNot(20, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+
+		ts2 := ts1.Add(4 * time.Hour)
+		require.NoError(t, orc.updateAccountState(ts2, localAccount, sciNot(3, 18).Int))
+		require.NoError(t, orc.updateAccountState(ts2, localAccount2, sciNot(4, 18).Int))
+
+		localAccount, err = loadAccount(orc.db, addr1)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(3, 18).Int.String(),
+			localAccount.TotalWithdrawalAmount.Value.Int.String(),
+			"Total withdrawl amount should've been persisted")
+		localAccount2, err = loadAccount(orc.db, addr2)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(4, 18).Int.String(),
+			localAccount2.TotalWithdrawalAmount.Value.Int.String(),
+			"Total withdrawl amount should've been persisted")
+
+		ts3 := ts1.Add(5 * time.Hour)
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts3, localAccount, sciNot(3, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts3, localAccount2, sciNot(4, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+
+		// Reset time by at the next day from ts1 00:00:01 UTC
+		ts4 := ts1.Add(24 * time.Hour).Add(time.Second)
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts4, localAccount, sciNot(3, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts4, localAccount2, sciNot(4, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts4, localAccount, sciNot(10, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts4, localAccount2, sciNot(20, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+
+		require.NoError(t, orc.updateAccountState(ts4, localAccount, sciNot(3, 18).Int))
+		localAccount, err = loadAccount(orc.db, addr1)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(3, 18).Int.String(),
+			localAccount.TotalWithdrawalAmount.Value.Int.String(),
+			"Oracle should update the state")
+
+		require.NoError(t, orc.updateAccountState(ts4, localAccount2, sciNot(4, 18).Int))
+		localAccount2, err = loadAccount(orc.db, addr2)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(4, 18).Int.String(),
+			localAccount2.TotalWithdrawalAmount.Value.Int.String(),
+			"Oracle should update the state")
+	})
+
+	t.Run("Total per account (foreign) withdrawal", func(t *testing.T) {
+		addr1 := loom.MustParseAddress("chain:0xfa4c7920accfd66b86f5fd0e69682a79f762d49e")
+		addr2 := loom.MustParseAddress("eth:0xb16a379ec18d4093666f8f38b11a3071c920207d")
+
+		localAccount, err := loadAccount(orc.db, addr1)
+		require.NoError(t, err)
+		foreignAccount, err := loadAccount(orc.db, addr2)
+		require.NoError(t, err)
+
+		// Use fixed time to avoid timing dependency issue
+		ts1 := time.Date(2019, 10, 11, 2, 30, 0, 0, time.UTC)
+		limitReached, err := orc.verifyAccountDailyWithdrawal(ts1, localAccount, sciNot(3, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts1, foreignAccount, sciNot(3, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts1, localAccount, sciNot(10, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts1, foreignAccount, sciNot(10, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+
+		ts2 := ts1.Add(4 * time.Hour)
+		require.NoError(t, orc.updateAccountState(ts2, localAccount, sciNot(3, 18).Int))
+		require.NoError(t, orc.updateAccountState(ts2, foreignAccount, sciNot(3, 18).Int))
+
+		localAccount, err = loadAccount(orc.db, addr1)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(3, 18).Int.String(),
+			localAccount.TotalWithdrawalAmount.Value.Int.String(),
+			"Oracle should update the state")
+		state2, err := loadAccount(orc.db, addr2)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(3, 18).Int.String(),
+			state2.TotalWithdrawalAmount.Value.Int.String(),
+			"Oracle should update the state")
+
+		ts3 := ts1.Add(5 * time.Hour)
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts3, localAccount, sciNot(3, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts3, foreignAccount, sciNot(3, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+
+		// Reset time by at the next day from ts1 00:00:01 UTC
+		ts4 := ts1.Add(24 * time.Hour).Add(time.Second)
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts4, localAccount, sciNot(3, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts4, foreignAccount, sciNot(3, 18).Int)
+		require.NoError(t, err)
+		require.False(t, limitReached)
+
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts4, localAccount, sciNot(10, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+		limitReached, err = orc.verifyAccountDailyWithdrawal(ts4, foreignAccount, sciNot(10, 18).Int)
+		require.NoError(t, err)
+		require.True(t, limitReached,
+			"Oracle should not allow withdrawal with the amount more than max total daily amount")
+
+		require.NoError(t, orc.updateAccountState(ts4, localAccount, sciNot(3, 18).Int))
+		localAccount, err = loadAccount(orc.db, addr1)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(3, 18).Int.String(),
+			localAccount.TotalWithdrawalAmount.Value.Int.String(),
+			"Oracle should update the state")
+
+		require.NoError(t, orc.updateAccountState(ts4, foreignAccount, sciNot(3, 18).Int))
+		state2, err = loadAccount(orc.db, addr2)
+		require.NoError(t, err)
+		require.Equal(t,
+			sciNot(3, 18).Int.String(),
+			foreignAccount.TotalWithdrawalAmount.Value.Int.String(),
+			"Oracle should update the state")
+	})
 }

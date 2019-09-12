@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"runtime"
 	"sort"
 	"strconv"
@@ -26,6 +27,7 @@ import (
 	lcrypto "github.com/loomnetwork/go-loom/crypto"
 	ltypes "github.com/loomnetwork/go-loom/types"
 	"github.com/loomnetwork/loomchain"
+	dbm "github.com/loomnetwork/loomchain/db"
 	gwcontract "github.com/loomnetwork/transfer-gateway/builtin/plugins/gateway"
 	"github.com/pkg/errors"
 )
@@ -167,6 +169,10 @@ type Oracle struct {
 
 	// Tron specific
 	tronClient *TronClient
+
+	db                                 dbm.DBWrapper
+	maxTotalDailyWithdrawalAmount      *loom.BigUInt
+	maxPerAccountDailyWithdrawalAmount *loom.BigUInt
 }
 
 func CreateOracle(cfg *TransferGatewayConfig, chainID string) (*Oracle, error) {
@@ -239,6 +245,29 @@ func createOracle(cfg *TransferGatewayConfig, chainID string,
 	hashPool := newRecentHashPool(time.Duration(cfg.MainnetPollInterval) * time.Second * 4)
 	hashPool.startCleanupRoutine()
 
+	var dbName string
+	switch gatewayType {
+	case gwcontract.EthereumGateway:
+		dbName = "eth_oracle"
+	case gwcontract.LoomCoinGateway:
+		dbName = "loom_oracle"
+	case gwcontract.TronGateway:
+		dbName = "tron_oracle"
+	case gwcontract.BinanceGateway:
+		dbName = "binance_oracle"
+	default:
+		return nil, errors.Errorf("not enabled db for gateway %v", gatewayType)
+	}
+
+	var db dbm.DBWrapper
+	if cfg.WithdrawalLimitsEnabled {
+		// .db suffix will be automatically appended to the DB name
+		db, err = dbm.LoadDB("goleveldb", dbName, ".", 256, 4, false)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	return &Oracle{
 		cfg:                          *cfg,
 		chainID:                      chainID,
@@ -272,7 +301,10 @@ func createOracle(cfg *TransferGatewayConfig, chainID string,
 		withdrawalSig:       cfg.WithdrawalSig,
 		withdrawerBlacklist: withdrawerBlacklist,
 		// Oracle will do receipt signing when BatchSignFnConfig is disabled
-		receiptSigningEnabled: receiptSigningEnabled,
+		receiptSigningEnabled:              receiptSigningEnabled,
+		db:                                 db,
+		maxTotalDailyWithdrawalAmount:      sciNot(cfg.MaxTotalDailyWithdrawalAmount, 18),
+		maxPerAccountDailyWithdrawalAmount: sciNot(cfg.MaxPerAccountDailyWithdrawalAmount, 18),
 	}, nil
 }
 
@@ -529,6 +561,16 @@ func (orc *Oracle) signPendingWithdrawals() error {
 	// Filter already seen withdrawals in 4 * pollInterval time
 	filteredWithdrawals := orc.filterSeenWithdrawals(withdrawals)
 
+	ts := time.Now()
+
+	var state *OracleState
+	if orc.cfg.WithdrawalLimitsEnabled {
+		state, err = loadState(orc.db)
+		if err != nil {
+			return err
+		}
+	}
+
 	for _, summary := range filteredWithdrawals {
 		tokenOwner := loom.UnmarshalAddressPB(summary.TokenOwner)
 
@@ -549,7 +591,78 @@ func (orc *Oracle) signPendingWithdrawals() error {
 			continue
 		}
 
-		sig, err := orc.signTransferGatewayWithdrawal(summary.Hash)
+		var localAccount, foreignAccount *Account
+		var foreignTokenOwner loom.Address
+		amount := summary.TokenAmount.Value.Int
+
+		if orc.cfg.WithdrawalLimitsEnabled {
+			limitReached, err := orc.verifyTotalDailyWithdrawal(ts, state, amount)
+			if err != nil {
+				return err
+			}
+			if limitReached {
+				orc.logger.Info(
+					"Total daily withdrawal limit reached, won't sign withdrawal",
+					"owner", tokenOwner.String(),
+					"hash", hex.EncodeToString(summary.Hash),
+					"limit", orc.maxTotalDailyWithdrawalAmount.Int.String(),
+					"amount", amount.String(),
+				)
+				// daily total reached, so don't need to process any more withdrawals at this time
+				break
+			}
+
+			localAccount, err = loadAccount(orc.db, tokenOwner)
+			if err != nil {
+				return err
+			}
+
+			limitReached, err = orc.verifyAccountDailyWithdrawal(ts, localAccount, amount)
+			if err != nil {
+				return err
+			}
+
+			if limitReached {
+				orc.logger.Info(
+					"Account daily withdrawal limit reached, won't sign withdrawal",
+					"owner", tokenOwner.String(),
+					"hash", hex.EncodeToString(summary.Hash),
+					"limit", orc.maxPerAccountDailyWithdrawalAmount.Int.String(),
+					"amount", amount.String(),
+				)
+				continue
+			}
+
+			var receipt *WithdrawalReceipt
+			receipt, err = orc.goGateway.GetWithdrawalReceipt(tokenOwner)
+			if err != nil {
+				return err
+			}
+			foreignTokenOwner = loom.UnmarshalAddressPB(receipt.TokenOwner)
+			foreignAccount, err = loadAccount(orc.db, foreignTokenOwner)
+			if err != nil {
+				return err
+			}
+
+			limitReached, err = orc.verifyAccountDailyWithdrawal(ts, foreignAccount, amount)
+			if err != nil {
+				return err
+			}
+
+			if limitReached {
+				orc.logger.Info(
+					"Account daily withdrawal limit reached, won't sign withdrawal",
+					"tokenOwner", foreignTokenOwner.String(),
+					"hash", hex.EncodeToString(summary.Hash),
+					"limit", orc.maxPerAccountDailyWithdrawalAmount.Int.String(),
+					"amount", receipt.TokenAmount.Value.Int.String(),
+				)
+				continue
+			}
+		}
+
+		var sig []byte
+		sig, err = orc.signTransferGatewayWithdrawal(summary.Hash)
 		if err != nil {
 			return err
 		}
@@ -579,9 +692,107 @@ func (orc *Oracle) signPendingWithdrawals() error {
 				"tokenOwner", tokenOwner.String(),
 				"hash", hex.EncodeToString(summary.Hash),
 			)
+
+			if orc.cfg.WithdrawalLimitsEnabled {
+				if err = orc.updateOracleState(ts, state, amount); err != nil {
+					orc.logger.Error("Failed to update Oracle state",
+						"owner", tokenOwner.String(),
+						"hash", hex.EncodeToString(summary.Hash),
+						"error", err,
+					)
+					return err
+				}
+
+				if err = orc.updateAccountState(ts, localAccount, amount); err != nil {
+					orc.logger.Error("Failed to update local account",
+						"owner", tokenOwner.String(),
+						"hash", hex.EncodeToString(summary.Hash),
+						"error", err,
+					)
+					return err
+				}
+
+				if err = orc.updateAccountState(ts, foreignAccount, amount); err != nil {
+					orc.logger.Error("Failed to update foreign account",
+						"owner", foreignTokenOwner.String(),
+						"hash", hex.EncodeToString(summary.Hash),
+						"error", err,
+					)
+					return err
+				}
+			}
 		}
 	}
 	return nil
+}
+
+// Checks if the daily withdrawal limit has been reached, returns true if it has been.
+func (orc *Oracle) verifyTotalDailyWithdrawal(ts time.Time, state *OracleState, amount *big.Int) (bool, error) {
+	currentAmount := state.TotalWithdrawalAmount.Value.Int
+
+	// state timestamp always maintains 00:00:00 UTC timestamp
+	dayStart := time.Unix(state.Timestamp, 0)
+	// If current timestamp is after state timestamp for a day, assumed that we the total amount
+	// should be reset first.
+	if ts.Sub(dayStart).Hours() > 24 {
+		fmt.Println("reseting daily withdrawal amount", ts, amount.String(), ts.Sub(dayStart).Hours())
+		currentAmount = big.NewInt(0)
+	}
+
+	fmt.Println("checking withdrawal", dayStart, ts, amount.String(), ts.Sub(dayStart).Hours())
+	nextAmount := big.NewInt(0).Add(currentAmount, amount)
+	return nextAmount.Cmp(orc.maxTotalDailyWithdrawalAmount.Int) > 0, nil
+}
+
+func (orc *Oracle) updateOracleState(ts time.Time, state *OracleState, amount *big.Int) error {
+	// state timestamp always maintains 00:00:00 UTC timestamp
+	dayStart := time.Unix(state.Timestamp, 0)
+	// If current timestamp is after stateTs for a day, reset TimeStamp and the TotalWithdrawalAmount.
+	if ts.Sub(dayStart).Hours() > 24 {
+		fmt.Println("reseting daily withdrawal period")
+		year, month, day := ts.Date()
+		state.Timestamp = time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Unix()
+		state.TotalWithdrawalAmount = &ltypes.BigUInt{Value: *loom.NewBigUIntFromInt(0)}
+	}
+
+	sum := big.NewInt(0).Add(state.TotalWithdrawalAmount.Value.Int, amount)
+	state.TotalWithdrawalAmount = &ltypes.BigUInt{Value: *loom.NewBigUInt(sum)}
+
+	return saveState(orc.db, state)
+}
+
+// Checks if the daily withdraal limit for an account has been reached, returns true if it has been.
+func (orc *Oracle) verifyAccountDailyWithdrawal(ts time.Time, account *Account, amount *big.Int) (bool, error) {
+	currentAmount := big.NewInt(0)
+	if account.TotalWithdrawalAmount != nil {
+		currentAmount = account.TotalWithdrawalAmount.Value.Int
+	}
+
+	// each daily withdrawal period starts at 00:00:00 UTC
+	dayStart := time.Unix(account.Timestamp, 0)
+	// daily limit is reset every 24 hours
+	if ts.Sub(dayStart).Hours() > 24 {
+		currentAmount = big.NewInt(0)
+	}
+
+	nextAmount := big.NewInt(0).Add(currentAmount, amount)
+	return nextAmount.Cmp(orc.maxPerAccountDailyWithdrawalAmount.Int) > 0, nil
+}
+
+func (orc *Oracle) updateAccountState(ts time.Time, account *Account, amount *big.Int) error {
+	// each daily withdrawal period starts at 00:00:00 UTC
+	dayStart := time.Unix(account.Timestamp, 0)
+	// reset the withdrawal period & limit every 24 hours
+	if ts.Sub(dayStart).Hours() > 24 {
+		year, month, day := ts.Date()
+		account.Timestamp = time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Unix()
+		account.TotalWithdrawalAmount = &ltypes.BigUInt{Value: *loom.NewBigUIntFromInt(0)}
+	}
+
+	sum := big.NewInt(0).Add(account.TotalWithdrawalAmount.Value.Int, amount)
+	account.TotalWithdrawalAmount = &ltypes.BigUInt{Value: *loom.NewBigUInt(sum)}
+
+	return saveAccount(orc.db, account)
 }
 
 func (orc *Oracle) verifyContractCreators() error {
@@ -1519,4 +1730,11 @@ func LoadMainnetPrivateKey(hsmEnabled bool, path string) (lcrypto.PrivateKey, er
 		return nil, err
 	}
 	return privKey, nil
+}
+
+func sciNot(m, n int64) *loom.BigUInt {
+	ret := loom.NewBigUIntFromInt(10)
+	ret.Exp(ret, loom.NewBigUIntFromInt(n), nil)
+	ret.Mul(ret, loom.NewBigUIntFromInt(m))
+	return ret
 }

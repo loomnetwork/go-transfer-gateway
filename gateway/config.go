@@ -83,8 +83,15 @@ type TransferGatewayConfig struct {
 	VerifyHotWalletDeposits bool
 	// Generic mainnet hot wallet address in case mainnet does not have smart contract
 	MainnetHotWalletAddress string
-	//Asset symbol for Binance-dex gateway (mainnet contract address)
+	// Asset symbol for Binance-dex gateway (mainnet contract address)
 	BinanceLoomToken string
+
+	// Enforce withdrawal limits
+	WithdrawalLimitsEnabled bool
+	// The give amount will convert to big.Int with 18 zero appended
+	// e.g. 314 is equal 314 * 10^18
+	MaxTotalDailyWithdrawalAmount      int64
+	MaxPerAccountDailyWithdrawalAmount int64
 }
 
 func DefaultConfig(rpcProxyPort int32) *TransferGatewayConfig {
@@ -115,7 +122,9 @@ func DefaultConfig(rpcProxyPort int32) *TransferGatewayConfig {
 			MainnetPrivateKeyPath:       "",
 			MainnetPrivateKeyHsmEnabled: false,
 		},
-		WithdrawalSig: UnprefixedWithdrawalSigType,
+		WithdrawalSig:                      UnprefixedWithdrawalSigType,
+		MaxTotalDailyWithdrawalAmount:      5000000,
+		MaxPerAccountDailyWithdrawalAmount: 500000,
 	}
 }
 
@@ -147,7 +156,9 @@ func DefaultLoomCoinTGConfig(rpcProxyPort int32) *TransferGatewayConfig {
 			MainnetPrivateKeyPath:       "",
 			MainnetPrivateKeyHsmEnabled: false,
 		},
-		WithdrawalSig: UnprefixedWithdrawalSigType,
+		WithdrawalSig:                      UnprefixedWithdrawalSigType,
+		MaxTotalDailyWithdrawalAmount:      5000000,
+		MaxPerAccountDailyWithdrawalAmount: 500000,
 	}
 }
 
@@ -180,7 +191,9 @@ func DefaultTronConfig(rpcProxyPort int32) *TransferGatewayConfig {
 			MainnetPrivateKeyPath:       "",
 			MainnetPrivateKeyHsmEnabled: false,
 		},
-		WithdrawalSig: UnprefixedWithdrawalSigType,
+		WithdrawalSig:                      UnprefixedWithdrawalSigType,
+		MaxTotalDailyWithdrawalAmount:      5000000,
+		MaxPerAccountDailyWithdrawalAmount: 500000,
 	}
 }
 

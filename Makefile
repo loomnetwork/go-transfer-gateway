@@ -56,6 +56,8 @@ GOFLAGS_NOEVM = -tags "gateway" -ldflags "$(GOFLAGS_BASE)"
 
 E2E_TESTS_TIMEOUT = 20m
 
+PROTOC = protoc --plugin=./protoc-gen-gogo -I$(GOPATH)/src -I/usr/local/include
+
 .PHONY: all clean test get_lint update_lint deps oracles lint
 
 all: loom
@@ -159,3 +161,11 @@ clean:
 	go clean
 	rm -f \
 		pcoracle
+
+protoc-gen-gogo:
+	go build github.com/gogo/protobuf/protoc-gen-gogo
+	
+%.pb.go: %.proto protoc-gen-gogo
+	$(PROTOC) --gogo_out=plugins=grpc:$(GOPATH)/src $(PKG)/$<
+
+proto: gateway/gateway.pb.go

@@ -1,0 +1,15 @@
+
+syntax = "proto3";
+
+import "github.com/loomnetwork/go-loom/types/types.proto";
+
+message OracleState {
+    int64 timestamp = 1;
+    BigUInt total_withdrawal_amount = 2;
+}
+
+message Account {
+    Address owner = 1;
+    int64 timestamp = 2;
+    BigUInt total_withdrawal_amount = 3;
+}
