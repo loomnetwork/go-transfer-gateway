@@ -168,4 +168,6 @@ protoc-gen-gogo:
 %.pb.go: %.proto protoc-gen-gogo
 	$(PROTOC) --gogo_out=plugins=grpc:$(GOPATH)/src $(PKG)/$<
 
-proto: gateway/gateway.pb.go
+proto: \
+	gateway/fns.pb.go \
+	gateway/gateway.pb.go

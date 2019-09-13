@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+package gateway;
+
 import "github.com/loomnetwork/go-loom/types/types.proto";
 
 message WithdrawalMessage {

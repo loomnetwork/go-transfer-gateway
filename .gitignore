@@ -1,3 +1,4 @@
 /vendor/
 /builtin/plugins/gateway/ethdb-batch.log
 /builtin/plugins/gateway/v1/ethdb-batch.log
+/protoc-gen-gogo
