@@ -96,6 +96,7 @@ func TestTransferGatewayOracleWithdrawalLimit(t *testing.T) {
 		db:                                 db,
 		maxTotalDailyWithdrawalAmount:      sciNot(10, 18),
 		maxPerAccountDailyWithdrawalAmount: sciNot(5, 18),
+		logger: loom.NewLoomLogger("info", "file://-"),
 	}
 
 	t.Run("Total daily withdrawal", func(t *testing.T) {

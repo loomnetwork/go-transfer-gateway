@@ -735,11 +735,9 @@ func (orc *Oracle) verifyTotalDailyWithdrawal(ts time.Time, state *OracleState, 
 	// If current timestamp is after state timestamp for a day, assumed that we the total amount
 	// should be reset first.
 	if ts.Sub(dayStart).Hours() > 24 {
-		fmt.Println("reseting daily withdrawal amount", ts, amount.String(), ts.Sub(dayStart).Hours())
 		currentAmount = big.NewInt(0)
 	}
 
-	fmt.Println("checking withdrawal", dayStart, ts, amount.String(), ts.Sub(dayStart).Hours())
 	nextAmount := big.NewInt(0).Add(currentAmount, amount)
 	return nextAmount.Cmp(orc.maxTotalDailyWithdrawalAmount.Int) > 0, nil
 }
@@ -749,10 +747,10 @@ func (orc *Oracle) updateOracleState(ts time.Time, state *OracleState, amount *b
 	dayStart := time.Unix(state.Timestamp, 0)
 	// If current timestamp is after stateTs for a day, reset TimeStamp and the TotalWithdrawalAmount.
 	if ts.Sub(dayStart).Hours() > 24 {
-		fmt.Println("reseting daily withdrawal period")
 		year, month, day := ts.Date()
 		state.Timestamp = time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Unix()
 		state.TotalWithdrawalAmount = &ltypes.BigUInt{Value: *loom.NewBigUIntFromInt(0)}
+		orc.logger.Info("Reset daily total withdrawal limit period", "dayStart", state.Timestamp)
 	}
 
 	sum := big.NewInt(0).Add(state.TotalWithdrawalAmount.Value.Int, amount)
@@ -787,6 +785,11 @@ func (orc *Oracle) updateAccountState(ts time.Time, account *Account, amount *bi
 		year, month, day := ts.Date()
 		account.Timestamp = time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Unix()
 		account.TotalWithdrawalAmount = &ltypes.BigUInt{Value: *loom.NewBigUIntFromInt(0)}
+		orc.logger.Info(
+			"Reset daily withdrawal limit period",
+			"dayStart", account.Timestamp,
+			"account", loom.UnmarshalAddressPB(account.Owner).String(),
+		)
 	}
 
 	sum := big.NewInt(0).Add(account.TotalWithdrawalAmount.Value.Int, amount)
