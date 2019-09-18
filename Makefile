@@ -1,4 +1,4 @@
-PKG = github.com/loomnetwork/transfer-gateway
+PKG ?= github.com/loomnetwork/transfer-gateway
 
 PLUGIN_DIR = $(GOPATH)/src/github.com/loomnetwork/go-loom
 LOOMCHAIN_DIR = $(GOPATH)/src/github.com/loomnetwork/loomchain
