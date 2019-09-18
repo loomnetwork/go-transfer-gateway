@@ -8,11 +8,12 @@ import (
 )
 
 var (
-	Build        = ""
-	GitSHA       = ""
-	GoLoomGitSHA = ""
-	EthGitSHA    = ""
-	BtcdGitSHA   = ""
+	Build           = ""
+	GitSHA          = ""
+	GoLoomGitSHA    = ""
+	LoomchainGitSHA = ""
+	EthGitSHA       = ""
+	BtcdGitSHA      = ""
 )
 
 func FullVersion() string {
@@ -58,6 +59,7 @@ func NewEnvCommand() *cobra.Command {
 				"build":       Build,
 				"git sha":     GitSHA,
 				"go-loom":     GoLoomGitSHA,
+				"loomchain":   LoomchainGitSHA,
 				"go-ethereum": EthGitSHA,
 				"go-btcd":     BtcdGitSHA,
 			})
