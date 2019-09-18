@@ -567,6 +567,7 @@ func (orc *Oracle) signPendingWithdrawals() error {
 	if orc.cfg.WithdrawalLimitsEnabled {
 		state, err = loadState(orc.db)
 		if err != nil {
+			orc.logger.Error("Failed to load Oracle state", "err", err)
 			return err
 		}
 	}
@@ -593,71 +594,74 @@ func (orc *Oracle) signPendingWithdrawals() error {
 
 		var localAccount, foreignAccount *Account
 		var foreignTokenOwner loom.Address
-		amount := summary.TokenAmount.Value.Int
+		var amount *big.Int
+		var enforceWithdrawalLimit bool
 
 		if orc.cfg.WithdrawalLimitsEnabled {
-			limitReached, err := orc.verifyTotalDailyWithdrawal(ts, state, amount)
-			if err != nil {
-				return err
-			}
-			if limitReached {
-				orc.logger.Info(
-					"Total daily withdrawal limit reached, won't sign withdrawal",
-					"owner", tokenOwner.String(),
-					"hash", hex.EncodeToString(summary.Hash),
-					"limit", orc.maxTotalDailyWithdrawalAmount.Int.String(),
-					"amount", amount.String(),
-				)
-				// daily total reached, so don't need to process any more withdrawals at this time
-				break
-			}
-
-			localAccount, err = loadAccount(orc.db, tokenOwner)
-			if err != nil {
-				return err
-			}
-
-			limitReached, err = orc.verifyAccountDailyWithdrawal(ts, localAccount, amount)
-			if err != nil {
-				return err
-			}
-
-			if limitReached {
-				orc.logger.Info(
-					"Account daily withdrawal limit reached, won't sign withdrawal",
-					"owner", tokenOwner.String(),
-					"hash", hex.EncodeToString(summary.Hash),
-					"limit", orc.maxPerAccountDailyWithdrawalAmount.Int.String(),
-					"amount", amount.String(),
-				)
-				continue
-			}
-
 			var receipt *WithdrawalReceipt
 			receipt, err = orc.goGateway.GetWithdrawalReceipt(tokenOwner)
 			if err != nil {
+				orc.logger.Error("Failed to fetch withdrawal receipt", "owner", tokenOwner.String(), "err", err)
 				return err
 			}
-			foreignTokenOwner = loom.UnmarshalAddressPB(receipt.TokenOwner)
-			foreignAccount, err = loadAccount(orc.db, foreignTokenOwner)
-			if err != nil {
-				return err
-			}
-
-			limitReached, err = orc.verifyAccountDailyWithdrawal(ts, foreignAccount, amount)
-			if err != nil {
-				return err
+			// Only apply withdrawal limit to ETH or LOOM
+			if receipt.TokenKind == gwcontract.TokenKind_ETH || receipt.TokenKind == gwcontract.TokenKind_LoomCoin {
+				enforceWithdrawalLimit = true
 			}
 
-			if limitReached {
-				orc.logger.Info(
-					"Account daily withdrawal limit reached, won't sign withdrawal",
-					"tokenOwner", foreignTokenOwner.String(),
-					"hash", hex.EncodeToString(summary.Hash),
-					"limit", orc.maxPerAccountDailyWithdrawalAmount.Int.String(),
-					"amount", receipt.TokenAmount.Value.Int.String(),
-				)
-				continue
+			if enforceWithdrawalLimit {
+				amount = summary.TokenAmount.Value.Int
+
+				if limitReached := orc.verifyTotalDailyWithdrawal(ts, state, amount); limitReached {
+					orc.logger.Info(
+						"Total daily withdrawal limit reached, won't sign withdrawal",
+						"owner", tokenOwner.String(),
+						"hash", hex.EncodeToString(summary.Hash),
+						"limit", orc.maxTotalDailyWithdrawalAmount.Int.String(),
+						"amount", amount.String(),
+					)
+					// daily total reached, so don't need to process any more withdrawals at this time
+					break
+				}
+
+				localAccount, err = loadAccount(orc.db, tokenOwner)
+				if err != nil {
+					orc.logger.Error("Failed to load local account", "owner", tokenOwner.String(), "err", err)
+					return err
+				}
+
+				if limitReached := orc.verifyAccountDailyWithdrawal(ts, localAccount, amount); limitReached {
+					orc.logger.Info(
+						"Account daily withdrawal limit reached, won't sign withdrawal",
+						"owner", tokenOwner.String(),
+						"hash", hex.EncodeToString(summary.Hash),
+						"limit", orc.maxPerAccountDailyWithdrawalAmount.Int.String(),
+						"amount", amount.String(),
+					)
+					continue
+				}
+
+				foreignTokenOwner = loom.UnmarshalAddressPB(receipt.TokenOwner)
+				foreignAccount, err = loadAccount(orc.db, foreignTokenOwner)
+				if err != nil {
+					orc.logger.Error(
+						"Failed to load foreign account",
+						"owner", foreignTokenOwner.String(),
+						"err", err,
+					)
+					return err
+				}
+
+				if limitReached := orc.verifyAccountDailyWithdrawal(ts, foreignAccount, amount); limitReached {
+					orc.logger.Info(
+						"Account daily withdrawal limit reached, won't sign withdrawal",
+						"tokenOwner", foreignTokenOwner.String(),
+						"hash", hex.EncodeToString(summary.Hash),
+						"limit", orc.maxPerAccountDailyWithdrawalAmount.Int.String(),
+						"amount", receipt.TokenAmount.Value.Int.String(),
+					)
+					continue
+				}
 			}
 		}
 
@@ -693,7 +697,7 @@ func (orc *Oracle) signPendingWithdrawals() error {
 				"hash", hex.EncodeToString(summary.Hash),
 			)
 
-			if orc.cfg.WithdrawalLimitsEnabled {
+			if orc.cfg.WithdrawalLimitsEnabled && enforceWithdrawalLimit {
 				if err = orc.updateOracleState(ts, state, amount); err != nil {
 					orc.logger.Error("Failed to update Oracle state",
 						"owner", tokenOwner.String(),
@@ -727,7 +731,7 @@ func (orc *Oracle) signPendingWithdrawals() error {
 }
 
 // Checks if the daily withdrawal limit has been reached, returns true if it has been.
-func (orc *Oracle) verifyTotalDailyWithdrawal(ts time.Time, state *OracleState, amount *big.Int) (bool, error) {
+func (orc *Oracle) verifyTotalDailyWithdrawal(ts time.Time, state *OracleState, amount *big.Int) bool {
 	currentAmount := state.TotalWithdrawalAmount.Value.Int
 
 	// state timestamp always maintains 00:00:00 UTC timestamp
@@ -739,7 +743,7 @@ func (orc *Oracle) verifyTotalDailyWithdrawal(ts time.Time, state *OracleState, 
 	}
 
 	nextAmount := big.NewInt(0).Add(currentAmount, amount)
-	return nextAmount.Cmp(orc.maxTotalDailyWithdrawalAmount.Int) > 0, nil
+	return nextAmount.Cmp(orc.maxTotalDailyWithdrawalAmount.Int) > 0
 }
 
 func (orc *Oracle) updateOracleState(ts time.Time, state *OracleState, amount *big.Int) error {
@@ -760,7 +764,7 @@ func (orc *Oracle) updateOracleState(ts time.Time, state *OracleState, amount *b
 }
 
 // Checks if the daily withdraal limit for an account has been reached, returns true if it has been.
-func (orc *Oracle) verifyAccountDailyWithdrawal(ts time.Time, account *Account, amount *big.Int) (bool, error) {
+func (orc *Oracle) verifyAccountDailyWithdrawal(ts time.Time, account *Account, amount *big.Int) bool {
 	currentAmount := big.NewInt(0)
 	if account.TotalWithdrawalAmount != nil {
 		currentAmount = account.TotalWithdrawalAmount.Value.Int
@@ -774,7 +778,7 @@ func (orc *Oracle) verifyAccountDailyWithdrawal(ts time.Time, account *Account, 
 	}
 
 	nextAmount := big.NewInt(0).Add(currentAmount, amount)
-	return nextAmount.Cmp(orc.maxPerAccountDailyWithdrawalAmount.Int) > 0, nil
+	return nextAmount.Cmp(orc.maxPerAccountDailyWithdrawalAmount.Int) > 0
 }
 
 func (orc *Oracle) updateAccountState(ts time.Time, account *Account, amount *big.Int) error {
