@@ -75,6 +75,9 @@ loomcoin_tgoracle:
 tron_tgoracle:
 	go build $(GOFLAGS) -o $@ $(PKG)/cmd/$@
 
+dposv2_oracle:
+	go build $(GOFLAGS) -o $@ $(PKG)/cmd/$@
+
 $(PLUGIN_DIR):
 	git clone -q https://github.com/loomnetwork/go-loom.git $@
 
