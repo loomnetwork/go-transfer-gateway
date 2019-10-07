@@ -6,13 +6,13 @@ import (
 	"crypto/ecdsa"
 	"math/big"
 	"testing"
-
-	"github.com/tendermint/tendermint/crypto/ed25519"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gogo/protobuf/proto"
 	loom "github.com/loomnetwork/go-loom"
+	tgtypes "github.com/loomnetwork/go-loom/builtin/types/transfer_gateway"
 	"github.com/loomnetwork/go-loom/client"
 	"github.com/loomnetwork/go-loom/common/evmcompat"
 	lp "github.com/loomnetwork/go-loom/plugin"
@@ -23,8 +23,7 @@ import (
 	"github.com/loomnetwork/loomchain/plugin"
 	ssha "github.com/miguelmota/go-solidity-sha3"
 	"github.com/stretchr/testify/suite"
-
-	tgtypes "github.com/loomnetwork/go-loom/builtin/types/transfer_gateway"
+	"github.com/tendermint/tendermint/crypto/ed25519"
 )
 
 var (
@@ -3152,4 +3151,543 @@ func (ts *GatewayTestSuite) TestGatewayHotWalletDepositAndApproveTransfer() {
 	require.NoError(err)
 	require.NotContains(gotTxHashes.TxHashes, txHash,
 		"Gateway should clear tx hash once Gateway processes tx")
+}
+
+func (ts *GatewayTestSuite) TestLoomCoinGatewayWithdrawalLimit() {
+	require := ts.Require()
+	ownerAddr := ts.dAppAddr
+	oracleAddr := ts.dAppAddr2
+	userEthAddr := ts.ethAddr3
+	userDappAddr := ts.dAppAddr3
+	user2EthAddr := ts.ethAddr4
+	user2DappAddr := ts.dAppAddr4
+
+	// fixed date
+	now := time.Date(2019, 9, 26, 10, 0, 0, 0, time.UTC)
+	block := types.BlockHeader{
+		ChainID: "chain",
+		Height:  int64(34),
+		Time:    now.Unix(),
+	}
+
+	fakeCtx := plugin.CreateFakeContextWithEVM(oracleAddr, loom.RootAddress("chain")).WithBlock(block)
+	fakeCtx = fakeCtx.WithFeature(features.TGWithdrawalLimitFeature, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGWithdrawalLimitFeature, false))
+
+	addressMapper, err := deployAddressMapperContract(fakeCtx)
+	require.NoError(err)
+
+	// map user
+	sig, err := address_mapper.SignIdentityMapping(userEthAddr, userDappAddr, ts.ethKey3, sigType)
+	require.NoError(err)
+	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(userDappAddr), userEthAddr, userDappAddr, sig))
+
+	// map user2
+	sig, err = address_mapper.SignIdentityMapping(user2EthAddr, user2DappAddr, ts.ethKey4, sigType)
+	require.NoError(err)
+	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(user2DappAddr), user2EthAddr, user2DappAddr, sig))
+
+	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   ownerAddr.MarshalPB(),
+		Oracles: []*types.Address{oracleAddr.MarshalPB()},
+	}, LoomCoinGateway)
+	require.NoError(err)
+
+	// set max withdrawal limit amounts
+	err = gwHelper.Contract.SetMaxWithdrawalLimit(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ownerAddr)),
+		&SetMaxWithdrawalLimitRequest{
+			MaxTotalDailyWithdrawalAmount:      &types.BigUInt{Value: *sciNot(150, 18)},
+			MaxPerAccountDailyWithdrawalAmount: &types.BigUInt{Value: *sciNot(100, 18)},
+		},
+	)
+	require.NoError(err)
+
+	// deploy LOOM coin
+	loomCoinContract, err := deployLoomCoinContract(fakeCtx)
+	require.NoError(err)
+	// depositing some loom coin to user address
+	loomdeposits := genLoomCoinDepositsBigInt(
+		loomCoinContract.Address,
+		userEthAddr,
+		[]uint64{71, 73, 75},
+		[]int64{160, 239, 581},
+	)
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: loomdeposits,
+		})
+	require.NoError(err)
+
+	// depositing some loom coin to user2 address
+	loomdeposits = genLoomCoinDepositsBigInt(
+		loomCoinContract.Address,
+		user2EthAddr,
+		[]uint64{76, 77, 78},
+		[]int64{100, 200, 300},
+	)
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: loomdeposits,
+		})
+	require.NoError(err)
+
+	// check balance user
+	loomcoin := newcoinStaticContext(gwHelper.ContractCtx(fakeCtx))
+	bal, err := loomcoin.balanceOf(userDappAddr)
+	require.NoError(err)
+	require.Equal(sciNot(160+239+581, 18).String(), bal.String(), "user should have deposited amount loomcoin")
+	// check balance user2
+	bal, err = loomcoin.balanceOf(user2DappAddr)
+	require.NoError(err)
+	require.Equal(sciNot(100+200+300, 18).String(), bal.String(), "user2 should have deposited amount loomcoin")
+
+	// make sure we don't have unclaimed tokens
+	resp, err := gwHelper.Contract.GetUnclaimedContractTokens(
+		gwHelper.ContractCtx(fakeCtx),
+		&GetUnclaimedContractTokensRequest{
+			TokenAddress: loomCoinContract.Address.MarshalPB(),
+		})
+	require.NoError(err)
+	require.Equal(loom.NewBigUIntFromInt(0), &resp.UnclaimedAmount.Value)
+
+	// user withdraw the first amount
+	withdrawalAmount := sciNot(50, 18)
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:     userEthAddr.MarshalPB(),
+		})
+	require.NoError(err, "user should be able to withdraw loomcoin if limit is not reached")
+
+	// clear out pending withdrawal reciept
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: []*MainnetEvent{
+				&MainnetEvent{
+					EthBlock: 80,
+					Payload: &MainnetWithdrawalEvent{
+						Withdrawal: &MainnetTokenWithdrawn{
+							TokenOwner:    userEthAddr.MarshalPB(),
+							TokenContract: ethTokenAddr.MarshalPB(),
+							TokenKind:     TokenKind_LoomCoin,
+							TokenAmount:   &types.BigUInt{Value: *withdrawalAmount},
+						},
+					},
+				},
+			},
+		})
+	require.NoError(err)
+
+	// user withdrawal the second amount
+	// this should fail because the amount exceeds the account limit
+	withdrawalAmount = sciNot(100, 18)
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:     userEthAddr.MarshalPB(),
+		})
+	require.EqualError(err, ErrAccountDailyWithdrawalLimitReached.Error())
+
+	// user withdrawal the second amount
+	// this shuould success because the withdrawal amount is still in the limit
+	withdrawalAmount = sciNot(50, 18)
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:     userEthAddr.MarshalPB(),
+		})
+	require.NoError(err, "user should be able to withdraw loomcoin if limit is not reached")
+
+	// clear out pending withdrawal reciept
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: []*MainnetEvent{
+				&MainnetEvent{
+					EthBlock: 85,
+					Payload: &MainnetWithdrawalEvent{
+						Withdrawal: &MainnetTokenWithdrawn{
+							TokenOwner:    userEthAddr.MarshalPB(),
+							TokenContract: ethTokenAddr.MarshalPB(),
+							TokenKind:     TokenKind_LoomCoin,
+							TokenAmount:   &types.BigUInt{Value: *withdrawalAmount},
+						},
+					},
+				},
+			},
+		})
+	require.NoError(err)
+
+	// user withdrawal the third amount
+	// this should fail because the amount exceeds the total limit
+	withdrawalAmount = sciNot(100, 18)
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:     userEthAddr.MarshalPB(),
+		})
+	require.EqualError(err, ErrTotalDailyWithdrawalLimitReached.Error())
+
+	// user2 withdrawal the first amount
+	// this should fail because the amount exceeds the total limit
+	withdrawalAmount = sciNot(100, 18)
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(user2DappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:     user2EthAddr.MarshalPB(),
+		})
+	require.EqualError(err, ErrTotalDailyWithdrawalLimitReached.Error())
+
+	// user2 withdrawal the second amount
+	// this should success because the total/account withdrawal amount is still in the limit
+	withdrawalAmount = sciNot(50, 18)
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(user2DappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:     user2EthAddr.MarshalPB(),
+		})
+	require.NoError(err, "user should be able to withdraw loomcoin if limit is not reached")
+	// clear out pending withdrawal reciept
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: []*MainnetEvent{
+				&MainnetEvent{
+					EthBlock: 90,
+					Payload: &MainnetWithdrawalEvent{
+						Withdrawal: &MainnetTokenWithdrawn{
+							TokenOwner:    user2EthAddr.MarshalPB(),
+							TokenContract: ethTokenAddr.MarshalPB(),
+							TokenKind:     TokenKind_LoomCoin,
+							TokenAmount:   &types.BigUInt{Value: *withdrawalAmount},
+						},
+					},
+				},
+			},
+		})
+	require.NoError(err)
+
+	// forward the time 1 day
+	now = now.Add(24 * time.Hour)
+	block = types.BlockHeader{
+		ChainID: "chain",
+		Height:  int64(200),
+		Time:    now.Unix(),
+	}
+	fakeCtx = fakeCtx.WithBlock(block)
+
+	// user withdrawal the third amount
+	// this should success because limit is reset
+	withdrawalAmount = sciNot(50, 18)
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:     userEthAddr.MarshalPB(),
+		})
+	require.NoError(err)
+
+	// user2 withdrawal the third amount
+	// this should success because limit is reset
+	withdrawalAmount = sciNot(50, 18)
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(user2DappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:     user2EthAddr.MarshalPB(),
+		})
+	require.NoError(err)
+}
+
+func (ts *GatewayTestSuite) TestEthGatewayWithdrawalLimit() {
+	require := ts.Require()
+	ownerAddr := ts.dAppAddr
+	oracleAddr := ts.dAppAddr2
+	userEthAddr := ts.ethAddr3
+	userDappAddr := ts.dAppAddr3
+	user2EthAddr := ts.ethAddr4
+	user2DappAddr := ts.dAppAddr4
+
+	// fixed date
+	now := time.Date(2019, 9, 26, 10, 0, 0, 0, time.UTC)
+	block := types.BlockHeader{
+		ChainID: "chain",
+		Height:  int64(34),
+		Time:    now.Unix(),
+	}
+
+	fakeCtx := plugin.CreateFakeContextWithEVM(oracleAddr, loom.RootAddress("chain")).WithBlock(block)
+	fakeCtx = fakeCtx.WithFeature(features.TGWithdrawalLimitFeature, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGWithdrawalLimitFeature, false))
+
+	addressMapper, err := deployAddressMapperContract(fakeCtx)
+	require.NoError(err)
+
+	// map user
+	sig, err := address_mapper.SignIdentityMapping(userEthAddr, userDappAddr, ts.ethKey3, sigType)
+	require.NoError(err)
+	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(userDappAddr), userEthAddr, userDappAddr, sig))
+
+	// map user2
+	sig, err = address_mapper.SignIdentityMapping(user2EthAddr, user2DappAddr, ts.ethKey4, sigType)
+	require.NoError(err)
+	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(user2DappAddr), user2EthAddr, user2DappAddr, sig))
+
+	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   ownerAddr.MarshalPB(),
+		Oracles: []*types.Address{oracleAddr.MarshalPB()},
+	}, EthereumGateway)
+	require.NoError(err)
+
+	// set max withdrawal limit amounts
+	err = gwHelper.Contract.SetMaxWithdrawalLimit(
+		gwHelper.ContractCtx(fakeCtx.WithSender(ownerAddr)),
+		&SetMaxWithdrawalLimitRequest{
+			MaxTotalDailyWithdrawalAmount:      &types.BigUInt{Value: *sciNot(150, 18)},
+			MaxPerAccountDailyWithdrawalAmount: &types.BigUInt{Value: *sciNot(100, 18)},
+		},
+	)
+	require.NoError(err)
+
+	// deploy Eth coin
+	ethCoinContract, err := deployETHContract(fakeCtx)
+	require.NoError(err)
+	// depositing some loom coin to user address
+	loomdeposits := genEthDepositsBigInt(
+		ethCoinContract.Address,
+		userEthAddr,
+		[]uint64{71, 73, 75},
+		[]int64{160, 239, 581},
+	)
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: loomdeposits,
+		})
+	require.NoError(err)
+
+	// depositing some loom coin to user2 address
+	loomdeposits = genEthDepositsBigInt(
+		ethCoinContract.Address,
+		user2EthAddr,
+		[]uint64{76, 77, 78},
+		[]int64{100, 200, 300},
+	)
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: loomdeposits,
+		})
+	require.NoError(err)
+
+	// check balance user
+	ethcoin := newETHContext(contract.WrapPluginContext(fakeCtx.WithAddress(userDappAddr)))
+	bal, err := ethcoin.balanceOf(userDappAddr)
+	require.NoError(err)
+	require.Equal(sciNot(160+239+581, 18).String(), bal.String(), "user should have deposited amount loomcoin")
+	// check balance user2
+	bal, err = ethcoin.balanceOf(user2DappAddr)
+	require.NoError(err)
+	require.Equal(sciNot(100+200+300, 18).String(), bal.String(), "user2 should have deposited amount loomcoin")
+
+	// make sure we don't have unclaimed tokens
+	resp, err := gwHelper.Contract.GetUnclaimedContractTokens(
+		gwHelper.ContractCtx(fakeCtx),
+		&GetUnclaimedContractTokensRequest{
+			TokenAddress: ethCoinContract.Address.MarshalPB(),
+		})
+	require.NoError(err)
+	require.Equal(loom.NewBigUIntFromInt(0), &resp.UnclaimedAmount.Value)
+
+	userCoin := newETHContext(contract.WrapPluginContext(fakeCtx.WithAddress(userDappAddr)))
+	user2Coin := newETHContext(contract.WrapPluginContext(fakeCtx.WithAddress(user2DappAddr)))
+
+	// user withdraw the first amount
+	withdrawalAmount := sciNot(50, 18)
+	require.NoError(userCoin.approve(gwHelper.Address, withdrawalAmount.Int))
+	err = gwHelper.Contract.WithdrawETH(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawETHRequest{
+			MainnetGateway: ethcoin.contractAddr.MarshalPB(),
+			Amount:         &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:      userEthAddr.MarshalPB(),
+		})
+	require.NoError(err, "user should be able to withdraw loomcoin if limit is not reached")
+
+	// clear out pending withdrawal reciept
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: []*MainnetEvent{
+				&MainnetEvent{
+					EthBlock: 80,
+					Payload: &MainnetWithdrawalEvent{
+						Withdrawal: &MainnetTokenWithdrawn{
+							TokenOwner:    userEthAddr.MarshalPB(),
+							TokenContract: ethTokenAddr.MarshalPB(),
+							TokenKind:     TokenKind_ETH,
+							TokenAmount:   &types.BigUInt{Value: *withdrawalAmount},
+						},
+					},
+				},
+			},
+		})
+	require.NoError(err)
+
+	// user withdrawal the second amount
+	// this should fail because the amount exceeds the account limit
+	withdrawalAmount = sciNot(100, 18)
+	require.NoError(userCoin.approve(gwHelper.Address, withdrawalAmount.Int))
+	err = gwHelper.Contract.WithdrawETH(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawETHRequest{
+			MainnetGateway: ethcoin.contractAddr.MarshalPB(),
+			Amount:         &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:      userEthAddr.MarshalPB(),
+		})
+	require.EqualError(err, ErrAccountDailyWithdrawalLimitReached.Error())
+
+	// user withdrawal the second amount
+	// this shuould success because the withdrawal amount is still in the limit
+	withdrawalAmount = sciNot(50, 18)
+	require.NoError(userCoin.approve(gwHelper.Address, withdrawalAmount.Int))
+	err = gwHelper.Contract.WithdrawETH(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawETHRequest{
+			MainnetGateway: ethcoin.contractAddr.MarshalPB(),
+			Amount:         &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:      userEthAddr.MarshalPB(),
+		})
+	require.NoError(err, "user should be able to withdraw loomcoin if limit is not reached")
+
+	// clear out pending withdrawal reciept
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: []*MainnetEvent{
+				&MainnetEvent{
+					EthBlock: 85,
+					Payload: &MainnetWithdrawalEvent{
+						Withdrawal: &MainnetTokenWithdrawn{
+							TokenOwner:    userEthAddr.MarshalPB(),
+							TokenContract: ethTokenAddr.MarshalPB(),
+							TokenKind:     TokenKind_ETH,
+							TokenAmount:   &types.BigUInt{Value: *withdrawalAmount},
+						},
+					},
+				},
+			},
+		})
+	require.NoError(err)
+
+	// user withdrawal the third amount
+	// this should fail because the amount exceeds the total limit
+	withdrawalAmount = sciNot(100, 18)
+	require.NoError(userCoin.approve(gwHelper.Address, withdrawalAmount.Int))
+	err = gwHelper.Contract.WithdrawETH(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawETHRequest{
+			MainnetGateway: ethcoin.contractAddr.MarshalPB(),
+			Amount:         &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:      userEthAddr.MarshalPB(),
+		})
+	require.EqualError(err, ErrTotalDailyWithdrawalLimitReached.Error())
+
+	// user2 withdrawal the first amount
+	// this should fail because the amount exceeds the total limit
+	withdrawalAmount = sciNot(100, 18)
+	require.NoError(user2Coin.approve(gwHelper.Address, withdrawalAmount.Int))
+	err = gwHelper.Contract.WithdrawETH(
+		gwHelper.ContractCtx(fakeCtx.WithSender(user2DappAddr)),
+		&WithdrawETHRequest{
+			MainnetGateway: ethcoin.contractAddr.MarshalPB(),
+			Amount:         &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:      user2EthAddr.MarshalPB(),
+		})
+	require.EqualError(err, ErrTotalDailyWithdrawalLimitReached.Error())
+
+	// user2 withdrawal the second amount
+	// this should success because the total/account withdrawal amount is still in the limit
+	withdrawalAmount = sciNot(50, 18)
+	require.NoError(user2Coin.approve(gwHelper.Address, withdrawalAmount.Int))
+	err = gwHelper.Contract.WithdrawETH(
+		gwHelper.ContractCtx(fakeCtx.WithSender(user2DappAddr)),
+		&WithdrawETHRequest{
+			MainnetGateway: ethcoin.contractAddr.MarshalPB(),
+			Amount:         &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:      user2EthAddr.MarshalPB(),
+		})
+	require.NoError(err, "user should be able to withdraw loomcoin if limit is not reached")
+	// clear out pending withdrawal reciept
+	err = gwHelper.Contract.ProcessEventBatch(
+		gwHelper.ContractCtx(fakeCtx),
+		&ProcessEventBatchRequest{
+			Events: []*MainnetEvent{
+				&MainnetEvent{
+					EthBlock: 90,
+					Payload: &MainnetWithdrawalEvent{
+						Withdrawal: &MainnetTokenWithdrawn{
+							TokenOwner:    user2EthAddr.MarshalPB(),
+							TokenContract: ethTokenAddr.MarshalPB(),
+							TokenKind:     TokenKind_ETH,
+							TokenAmount:   &types.BigUInt{Value: *withdrawalAmount},
+						},
+					},
+				},
+			},
+		})
+	require.NoError(err)
+
+	// forward the time 1 day
+	now = now.Add(24 * time.Hour)
+	block = types.BlockHeader{
+		ChainID: "chain",
+		Height:  int64(200),
+		Time:    now.Unix(),
+	}
+	fakeCtx = fakeCtx.WithBlock(block)
+
+	// user withdrawal the third amount
+	// this should success because limit is reset
+	withdrawalAmount = sciNot(50, 18)
+	require.NoError(userCoin.approve(gwHelper.Address, withdrawalAmount.Int))
+	err = gwHelper.Contract.WithdrawETH(
+		gwHelper.ContractCtx(fakeCtx.WithSender(userDappAddr)),
+		&WithdrawETHRequest{
+			MainnetGateway: ethcoin.contractAddr.MarshalPB(),
+			Amount:         &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:      userEthAddr.MarshalPB(),
+		})
+	require.NoError(err)
+
+	// user2 withdrawal the third amount
+	// this should success because limit is reset
+	withdrawalAmount = sciNot(50, 18)
+	require.NoError(user2Coin.approve(gwHelper.Address, withdrawalAmount.Int))
+	err = gwHelper.Contract.WithdrawETH(
+		gwHelper.ContractCtx(fakeCtx.WithSender(user2DappAddr)),
+		&WithdrawETHRequest{
+			MainnetGateway: ethcoin.contractAddr.MarshalPB(),
+			Amount:         &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:      user2EthAddr.MarshalPB(),
+		})
+	require.NoError(err)
 }

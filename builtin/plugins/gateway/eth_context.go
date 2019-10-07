@@ -97,3 +97,17 @@ func (c *ethContext) mintToGateway(amount *big.Int) error {
 
 	return nil
 }
+
+func (c *ethContext) approve(spender loom.Address, amount *big.Int) error {
+	req := &coin.ApproveRequest{
+		Spender: spender.MarshalPB(),
+		Amount:  &types.BigUInt{Value: *loom.NewBigUInt(amount)},
+	}
+
+	err := contract.CallMethod(c.ctx, c.contractAddr, "Approve", req, nil)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}

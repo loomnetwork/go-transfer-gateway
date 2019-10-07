@@ -72,6 +72,50 @@ func genLoomCoinDeposits(tokenAddr, owner loom.Address, blocks []uint64, values 
 	return result
 }
 
+func genLoomCoinDepositsBigInt(tokenAddr, owner loom.Address, blocks []uint64, values []int64) []*MainnetEvent {
+	if len(values) != len(blocks) {
+		panic("insufficient number of values")
+	}
+	result := []*MainnetEvent{}
+	for i, b := range blocks {
+		amount := sciNot(values[i], 18)
+		result = append(result, &MainnetEvent{
+			EthBlock: b,
+			Payload: &MainnetDepositEvent{
+				Deposit: &MainnetTokenDeposited{
+					TokenKind:     TokenKind_LoomCoin,
+					TokenContract: tokenAddr.MarshalPB(),
+					TokenOwner:    owner.MarshalPB(),
+					TokenAmount:   &types.BigUInt{Value: *amount},
+				},
+			},
+		})
+	}
+	return result
+}
+
+func genEthDepositsBigInt(tokenAddr, owner loom.Address, blocks []uint64, values []int64) []*MainnetEvent {
+	if len(values) != len(blocks) {
+		panic("insufficient number of values")
+	}
+	result := []*MainnetEvent{}
+	for i, b := range blocks {
+		amount := sciNot(values[i], 18)
+		result = append(result, &MainnetEvent{
+			EthBlock: b,
+			Payload: &MainnetDepositEvent{
+				Deposit: &MainnetTokenDeposited{
+					TokenKind:     TokenKind_ETH,
+					TokenContract: tokenAddr.MarshalPB(),
+					TokenOwner:    owner.MarshalPB(),
+					TokenAmount:   &types.BigUInt{Value: *amount},
+				},
+			},
+		})
+	}
+	return result
+}
+
 func genLoomDepositsFromBinance(tokenAddr, owner loom.Address, blocks []uint64, values []int64) []*MainnetEvent {
 	if len(values) != len(blocks) {
 		panic("insufficient number of values")
@@ -405,4 +449,11 @@ func deployTokenContract(ctx *plugin.FakeContextWithEVM, filename string, gatewa
 // Returns true if seen tx hash
 func seenTxHashExist(ctx contract.StaticContext, txHash []byte) bool {
 	return ctx.Has(seenTxHashKey(txHash))
+}
+
+func sciNot(m, n int64) *loom.BigUInt {
+	ret := loom.NewBigUIntFromInt(10)
+	ret.Exp(ret, loom.NewBigUIntFromInt(n), nil)
+	ret.Mul(ret, loom.NewBigUIntFromInt(m))
+	return ret
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gogo/protobuf/proto"
@@ -94,6 +95,12 @@ type (
 	UpdateBinanceTransferFeeRequest = tgtypes.TransferGatewayUpdateBinanceTransferFeeRequest
 	UpdateMainnetGatewayRequest     = tgtypes.TransferGatewayUpdateMainnetGatewayRequest
 	SwitchMainnetGatewayRequest     = tgtypes.TransferGatewaySwitchMainnetGatewayRequest
+
+	SetMaxWithdrawalLimitRequest  = tgtypes.TransferGatewaySetMaxWithdrawalLimitRequest
+	GetLocalAccountInfoRequest    = tgtypes.TransferGatewayGetLocalAccountInfoRequest
+	GetLocalAccountInfoResponse   = tgtypes.TransferGatewayGetLocalAccountInfoResponse
+	GetForeignAccountInfoRequest  = tgtypes.TransferGatewayGetForeignAccountInfoRequest
+	GetForeignAccountInfoResponse = tgtypes.TransferGatewayGetForeignAccountInfoResponse
 )
 
 var (
@@ -230,12 +237,14 @@ var (
 	ErrTxHashAlreadyExists      = errors.New("TG015: tx hash already exists")
 	ErrHotWalletFeatureDisabled = errors.New("TG017: hot wallet feature is disabled")
 
-	ErrInvalidUpdateWithdrawalReceipt   = errors.New("TG018: invalid update withdrawal receipt status")
-	ErrWithdrawalReceiptConfirmed       = errors.New("TG019: withdrawal receipt already confirmed")
-	ErrMissingWithdrawalHash            = errors.New("TG020: withdrawal hash is missing")
-	ErrGatewayVersion1_1FeatureDisabled = errors.New("TG021: v1.1 hasn't been enabled")
-	ErrInvalidMainnetGateway            = errors.New("TG022: invalid mainnet gateway address")
-	ErrInvalidHotWalletAddress          = errors.New("TG023: invalid hot wallet address")
+	ErrInvalidUpdateWithdrawalReceipt     = errors.New("TG018: invalid update withdrawal receipt status")
+	ErrWithdrawalReceiptConfirmed         = errors.New("TG019: withdrawal receipt already confirmed")
+	ErrMissingWithdrawalHash              = errors.New("TG020: withdrawal hash is missing")
+	ErrGatewayVersion1_1FeatureDisabled   = errors.New("TG021: v1.1 hasn't been enabled")
+	ErrInvalidMainnetGateway              = errors.New("TG022: invalid mainnet gateway address")
+	ErrInvalidHotWalletAddress            = errors.New("TG023: invalid hot wallet address")
+	ErrTotalDailyWithdrawalLimitReached   = errors.New("TG024: total daily withdrawal limit reached")
+	ErrAccountDailyWithdrawalLimitReached = errors.New("TG025: account daily withdrawal limit reached")
 )
 
 type GatewayType int
@@ -988,6 +997,26 @@ func (gw *Gateway) WithdrawETH(ctx contract.Context, req *WithdrawETHRequest) er
 		return ErrPendingWithdrawalExists
 	}
 
+	state, err := loadState(ctx)
+	if err != nil {
+		return err
+	}
+
+	if ctx.FeatureEnabled(features.TGWithdrawalLimitFeature, false) {
+		now := ctx.Now()
+		amount := req.Amount.Value.Int
+
+		if err := updateTotalDailyWithdrawal(ctx, now, state, amount); err != nil {
+			return err
+		}
+		if err := updateLocalAccountDailyWithdrawal(ctx, now, state, account, amount); err != nil {
+			return err
+		}
+		if err := updateForeignAccountDailyWithdrawal(ctx, now, state, foreignAccount, amount); err != nil {
+			return err
+		}
+	}
+
 	// The entity wishing to make the withdrawal must first grant approval to the Gateway contract
 	// to transfer the tokens, otherwise this will fail...
 	eth := newETHContext(ctx)
@@ -1017,11 +1046,6 @@ func (gw *Gateway) WithdrawETH(ctx contract.Context, req *WithdrawETHRequest) er
 
 	if err := saveLocalAccount(ctx, account); err != nil {
 		emitWithdrawETHError(ctx, err.Error(), req)
-		return err
-	}
-
-	state, err := loadState(ctx)
-	if err != nil {
 		return err
 	}
 
@@ -1100,6 +1124,27 @@ func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinR
 		return ErrPendingWithdrawalExists
 	}
 
+	state, err := loadState(ctx)
+	if err != nil {
+		emitWithdrawLoomCoinError(ctx, err.Error(), req)
+		return err
+	}
+
+	if ctx.FeatureEnabled(features.TGWithdrawalLimitFeature, false) {
+		now := ctx.Now()
+		amount := req.Amount.Value.Int
+
+		if err := updateTotalDailyWithdrawal(ctx, now, state, amount); err != nil {
+			return err
+		}
+		if err := updateLocalAccountDailyWithdrawal(ctx, now, state, account, amount); err != nil {
+			return err
+		}
+		if err := updateForeignAccountDailyWithdrawal(ctx, now, state, foreignAccount, amount); err != nil {
+			return err
+		}
+	}
+
 	// Burning the coin from dappchain to keep amount of coin consistent between two chains
 	coin := newCoinContext(ctx)
 	if err := coin.burn(ownerAddr, req.Amount.Value.Int); err != nil {
@@ -1140,12 +1185,6 @@ func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinR
 	}
 
 	if err := saveLocalAccount(ctx, account); err != nil {
-		emitWithdrawLoomCoinError(ctx, err.Error(), req)
-		return err
-	}
-
-	state, err := loadState(ctx)
-	if err != nil {
 		emitWithdrawLoomCoinError(ctx, err.Error(), req)
 		return err
 	}
@@ -2592,6 +2631,70 @@ func (gw *Gateway) SetTransferFee(ctx contract.Context, req *UpdateBinanceTransf
 	return saveState(ctx, state)
 }
 
+// SetMaxWithdrawalLimit sets the max withdrawal amounts that should be allowed by the gateway.
+func (gw *Gateway) SetMaxWithdrawalLimit(ctx contract.Context, req *SetMaxWithdrawalLimitRequest) error {
+	state, err := loadState(ctx)
+	if err != nil {
+		return err
+	}
+
+	if ctx.Message().Sender.Compare(loom.UnmarshalAddressPB(state.Owner)) != 0 {
+		return ErrNotAuthorized
+	}
+
+	state.MaxTotalDailyWithdrawalAmount = req.MaxTotalDailyWithdrawalAmount
+	state.MaxPerAccountDailyWithdrawalAmount = req.MaxPerAccountDailyWithdrawalAmount
+
+	return saveState(ctx, state)
+}
+
+// GetLocalAccountInfo returns generic account info of the local account
+func (gw *Gateway) GetLocalAccountInfo(ctx contract.StaticContext, req *GetLocalAccountInfoRequest) (*GetLocalAccountInfoResponse, error) {
+	owner := ctx.Message().Sender
+	if req.Owner != nil {
+		owner = loom.UnmarshalAddressPB(req.Owner)
+	}
+	if owner.IsEmpty() {
+		return nil, errors.New("no owner specified")
+	}
+
+	account, err := loadLocalAccount(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+
+	return &GetLocalAccountInfoResponse{
+		Owner:                        account.Owner,
+		WithdrawalReceipt:            account.WithdrawalReceipt,
+		LastWithdrawalLimitResetTime: account.LastWithdrawalLimitResetTime,
+		TotalWithdrawalAmount:        account.TotalWithdrawalAmount,
+	}, nil
+}
+
+// GetForeignAccountInfo returns generic info of the foreign account
+func (gw *Gateway) GetForeignAccountInfo(ctx contract.StaticContext, req *GetForeignAccountInfoRequest) (*GetForeignAccountInfoResponse, error) {
+	owner := ctx.Message().Sender
+	if req.Owner != nil {
+		owner = loom.UnmarshalAddressPB(req.Owner)
+	}
+	if owner.IsEmpty() {
+		return nil, errors.New("no owner specified")
+	}
+
+	account, err := loadForeignAccount(ctx, owner)
+	if err != nil {
+		return nil, err
+	}
+
+	return &GetForeignAccountInfoResponse{
+		Owner:                        account.Owner,
+		WithdrawalNonce:              account.WithdrawalNonce,
+		CurrentWithdrawer:            account.CurrentWithdrawer,
+		LastWithdrawalLimitResetTime: account.LastWithdrawalLimitResetTime,
+		TotalWithdrawalAmount:        account.TotalWithdrawalAmount,
+	}, nil
+}
+
 func SwitchMainnetGateway(ctx contract.Context, req *SwitchMainnetGatewayRequest) error {
 	state, err := loadState(ctx)
 	if err != nil {
@@ -2654,4 +2757,116 @@ func SwitchMainnetGateway(ctx contract.Context, req *SwitchMainnetGatewayRequest
 	state.MainnetGatewayAddress = req.MainnetAddress
 
 	return saveState(ctx, state)
+}
+
+// Adds the given amount to the daily withdrawal total if the new total doesn't exceed the daily limit.
+// Returns an error if the limit is exceeded.
+func updateTotalDailyWithdrawal(ctx contract.Context, now time.Time, state *GatewayState, amount *big.Int) error {
+	currentAmount := big.NewInt(0)
+	if state.TotalWithdrawalAmount != nil {
+		currentAmount = state.TotalWithdrawalAmount.Value.Int
+	}
+	maxAmount := big.NewInt(0)
+	if state.MaxTotalDailyWithdrawalAmount != nil {
+		maxAmount = state.MaxTotalDailyWithdrawalAmount.Value.Int
+	}
+	withdrawalLimitResetTime := state.LastWithdrawalLimitResetTime
+
+	// each daily withdrawal period starts at 00:00:00 UTC
+	dayStart := time.Unix(state.LastWithdrawalLimitResetTime, 0)
+	// daily limit is reset every 24 hours
+	if now.Sub(dayStart).Hours() > 24 {
+		year, month, day := now.Date()
+		withdrawalLimitResetTime = time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Unix()
+		ctx.Logger().Info(
+			"Reset gateway daily total withdrawal limit period",
+			"dayStart", withdrawalLimitResetTime,
+		)
+		currentAmount = big.NewInt(0)
+	}
+
+	sum := big.NewInt(0).Add(currentAmount, amount)
+	if sum.Cmp(maxAmount) > 0 {
+		return ErrTotalDailyWithdrawalLimitReached
+	}
+
+	state.LastWithdrawalLimitResetTime = withdrawalLimitResetTime
+	state.TotalWithdrawalAmount = &types.BigUInt{Value: *loom.NewBigUInt(sum)}
+	return nil
+}
+
+// Adds the given amount to the daily per-account withdrawal total if the new total doesn't exceed
+// the daily limit. Returns an error if the limit is exceeded.
+func updateLocalAccountDailyWithdrawal(
+	ctx contract.Context, now time.Time, state *GatewayState, account *LocalAccount, amount *big.Int,
+) error {
+	currentAmount := big.NewInt(0)
+	if account.TotalWithdrawalAmount != nil {
+		currentAmount = account.TotalWithdrawalAmount.Value.Int
+	}
+	maxAmount := big.NewInt(0)
+	if state.MaxPerAccountDailyWithdrawalAmount != nil {
+		maxAmount = state.MaxPerAccountDailyWithdrawalAmount.Value.Int
+	}
+	withdrawalLimitResetTime := account.LastWithdrawalLimitResetTime
+
+	// each daily withdrawal period starts at 00:00:00 UTC
+	dayStart := time.Unix(account.LastWithdrawalLimitResetTime, 0)
+	// daily limit is reset every 24 hours
+	if now.Sub(dayStart).Hours() > 24 {
+		year, month, day := now.Date()
+		withdrawalLimitResetTime = time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Unix()
+		ctx.Logger().Info(
+			"Reset local account daily total withdrawal limit period",
+			"dayStart", withdrawalLimitResetTime,
+		)
+		currentAmount = big.NewInt(0)
+	}
+
+	sum := big.NewInt(0).Add(currentAmount, amount)
+	if sum.Cmp(maxAmount) > 0 {
+		return ErrAccountDailyWithdrawalLimitReached
+	}
+
+	account.LastWithdrawalLimitResetTime = withdrawalLimitResetTime
+	account.TotalWithdrawalAmount = &types.BigUInt{Value: *loom.NewBigUInt(sum)}
+	return nil
+}
+
+// Adds the given amount to the daily per-account withdrawal total if the new total doesn't exceed
+// the daily limit. Returns an error if the limit is exceeded.
+func updateForeignAccountDailyWithdrawal(
+	ctx contract.Context, now time.Time, state *GatewayState, account *ForeignAccount, amount *big.Int,
+) error {
+	currentAmount := big.NewInt(0)
+	if account.TotalWithdrawalAmount != nil {
+		currentAmount = account.TotalWithdrawalAmount.Value.Int
+	}
+	maxAmount := big.NewInt(0)
+	if state.MaxPerAccountDailyWithdrawalAmount != nil {
+		maxAmount = state.MaxPerAccountDailyWithdrawalAmount.Value.Int
+	}
+	withdrawalLimitResetTime := account.LastWithdrawalLimitResetTime
+
+	// each daily withdrawal period starts at 00:00:00 UTC
+	dayStart := time.Unix(account.LastWithdrawalLimitResetTime, 0)
+	// daily limit is reset every 24 hours
+	if now.Sub(dayStart).Hours() > 24 {
+		year, month, day := now.Date()
+		withdrawalLimitResetTime = time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Unix()
+		ctx.Logger().Info(
+			"Reset foreign account daily total withdrawal limit period",
+			"dayStart", withdrawalLimitResetTime,
+		)
+		currentAmount = big.NewInt(0)
+	}
+
+	sum := big.NewInt(0).Add(currentAmount, amount)
+	if sum.Cmp(maxAmount) > 0 {
+		return ErrAccountDailyWithdrawalLimitReached
+	}
+
+	account.LastWithdrawalLimitResetTime = withdrawalLimitResetTime
+	account.TotalWithdrawalAmount = &types.BigUInt{Value: *loom.NewBigUInt(sum)}
+	return nil
 }
