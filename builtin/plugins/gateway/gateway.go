@@ -245,6 +245,7 @@ var (
 	ErrInvalidHotWalletAddress            = errors.New("TG023: invalid hot wallet address")
 	ErrTotalDailyWithdrawalLimitReached   = errors.New("TG024: total daily withdrawal limit reached")
 	ErrAccountDailyWithdrawalLimitReached = errors.New("TG025: account daily withdrawal limit reached")
+	ErrWithdrawalLimitFeatureDisabled     = errors.New("TG026: withdrawal limits haven't been enabled")
 )
 
 type GatewayType int
@@ -2633,6 +2634,10 @@ func (gw *Gateway) SetTransferFee(ctx contract.Context, req *UpdateBinanceTransf
 
 // SetMaxWithdrawalLimit sets the max withdrawal amounts that should be allowed by the gateway.
 func (gw *Gateway) SetMaxWithdrawalLimit(ctx contract.Context, req *SetMaxWithdrawalLimitRequest) error {
+	if ctx.FeatureEnabled(features.TGWithdrawalLimitFeature, false) {
+		return ErrWithdrawalLimitFeatureDisabled
+	}
+
 	state, err := loadState(ctx)
 	if err != nil {
 		return err
