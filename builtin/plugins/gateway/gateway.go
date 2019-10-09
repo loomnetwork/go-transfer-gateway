@@ -2634,7 +2634,7 @@ func (gw *Gateway) SetTransferFee(ctx contract.Context, req *UpdateBinanceTransf
 
 // SetMaxWithdrawalLimit sets the max withdrawal amounts that should be allowed by the gateway.
 func (gw *Gateway) SetMaxWithdrawalLimit(ctx contract.Context, req *SetMaxWithdrawalLimitRequest) error {
-	if ctx.FeatureEnabled(features.TGWithdrawalLimitFeature, false) {
+	if !ctx.FeatureEnabled(features.TGWithdrawalLimitFeature, false) {
 		return ErrWithdrawalLimitFeatureDisabled
 	}
 
