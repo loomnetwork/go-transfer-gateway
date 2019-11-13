@@ -4,6 +4,7 @@ package gateway
 
 import (
 	"crypto/ecdsa"
+	"fmt"
 	"math/big"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/gogo/protobuf/proto"
 	loom "github.com/loomnetwork/go-loom"
+	"github.com/loomnetwork/go-loom/builtin/types/coin"
 	tgtypes "github.com/loomnetwork/go-loom/builtin/types/transfer_gateway"
 	"github.com/loomnetwork/go-loom/client"
 	"github.com/loomnetwork/go-loom/common/evmcompat"
@@ -22,6 +24,7 @@ import (
 	"github.com/loomnetwork/loomchain/features"
 	"github.com/loomnetwork/loomchain/plugin"
 	ssha "github.com/miguelmota/go-solidity-sha3"
+	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"github.com/tendermint/tendermint/crypto/ed25519"
 )
@@ -3690,4 +3693,206 @@ func (ts *GatewayTestSuite) TestEthGatewayWithdrawalLimit() {
 			Recipient:      user2EthAddr.MarshalPB(),
 		})
 	require.NoError(err)
+}
+
+func (ts *GatewayTestSuite) TestBinanceGatewayLoomCoinBEP2PrecisionAdjustment() {
+	require := ts.Require()
+	ownerAddr := ts.dAppAddr
+	oracleAddr := ts.dAppAddr2
+	loomcoinOwnerAddr := ts.dAppAddr3
+	loomcoinGWOwnerAddr := ts.dAppAddr4
+	aliceForeignAddr := ts.binanceAddr
+	aliceDappAddr := ts.dAppAddr5
+
+	fakeCtx := plugin.CreateFakeContextWithEVM(oracleAddr, loom.RootAddress("chain"))
+	fakeCtx = fakeCtx.WithFeature(features.TGVersion1_3, true)
+	require.True(fakeCtx.FeatureEnabled(features.TGVersion1_3, false))
+	fakeCtx = fakeCtx.WithFeature(features.CoinVersion1_3Feature, true)
+	require.True(fakeCtx.FeatureEnabled(features.CoinVersion1_3Feature, false))
+	// TODO: Cleanup this clusterfuck later, FakeContextWithEVM.WithFeature stores features in FakeContext.data,
+	//       but FakeContext.SetFeature stores them in FakeContext.features, then at some point the
+	//       Coin contract somehow ends up with a reference to the FakeContext instead of the FakeContextWithEVM.
+	fakeCtx.FakeContext.SetFeature(features.TGVersion1_3, true)
+	fakeCtx.FakeContext.SetFeature(features.CoinVersion1_3Feature, true)
+
+	addressMapper, err := deployAddressMapperContract(fakeCtx)
+	require.NoError(err)
+
+	sig, err := address_mapper.SignIdentityMapping(aliceForeignAddr, aliceDappAddr, ts.binanceKey, sigType)
+	require.NoError(err)
+
+	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(aliceDappAddr), aliceForeignAddr, aliceDappAddr, sig))
+
+	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   ownerAddr.MarshalPB(),
+		Oracles: []*types.Address{oracleAddr.MarshalPB()},
+	}, BinanceGateway)
+	require.NoError(err)
+
+	loomCoinGwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
+		Owner:   loomcoinGWOwnerAddr.MarshalPB(),
+		Oracles: []*types.Address{oracleAddr.MarshalPB()},
+	}, LoomCoinGateway)
+	require.NoError(err)
+	fmt.Println("Loom Coin Gatway At", loomCoinGwHelper.Address)
+
+	acct1 := &coin.InitialAccount{
+		Owner:   loomcoinOwnerAddr.MarshalPB(),
+		Balance: 1000000000,
+	}
+	loomcoinContract, err := deployLoomCoinContract(fakeCtx, acct1)
+	require.NoError(err)
+	loomcoin := newCoinContext(contract.WrapPluginContext(fakeCtx.WithAddress(loomcoinOwnerAddr)))
+	// Transfer some Loom amount from coin creator to Gateway to make sure
+	// Gateway has enough money for withdrawals without minting tokens
+	startingAmount := sciNot(10000, 18)
+	require.NoError(loomcoin.transfer(
+		gwHelper.Address,
+		startingAmount.Int,
+	))
+
+	fmt.Println(loomcoin.balanceOf(loomcoinContract.Address))
+
+	// BEP2 8-digit decimals amount
+	depositAmount := sciNot(314, 8)
+	adjustedDepositAmount, err := adjustTokenAmount(depositAmount.Int, 8, 18)
+	require.NoError(err)
+
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 50,
+				Payload: &MainnetDepositEvent{
+					Deposit: &MainnetTokenDeposited{
+						TokenKind:     TokenKind_BNBLoomToken,
+						TokenContract: loomcoin.contractAddr.MarshalPB(),
+						TokenOwner:    aliceDappAddr.MarshalPB(),
+						TokenAmount:   &types.BigUInt{Value: *depositAmount},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(err)
+
+	bal, err := loomcoin.balanceOf(aliceDappAddr)
+	require.NoError(err)
+	require.Equal(
+		adjustedDepositAmount.String(),
+		bal.String(),
+		"LoomCoin deposited amount should be adjusted after depositing")
+
+	resp, err := gwHelper.Contract.GetUnclaimedContractTokens(
+		gwHelper.ContractCtx(fakeCtx),
+		&GetUnclaimedContractTokensRequest{
+			TokenAddress: loomcoinContract.Address.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+	require.Equal(loom.NewBigUIntFromInt(0), &resp.UnclaimedAmount.Value)
+
+	invalidWithdrawalAmount := sciNot(314, 8) // 3.14x10^10
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(aliceDappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *invalidWithdrawalAmount},
+			Recipient:     aliceForeignAddr.MarshalPB(),
+		},
+	)
+	require.Error(err)
+	invalidWithdrawalAmount = sciNot(1, 7) // 0.1x10^8
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(aliceDappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *invalidWithdrawalAmount},
+			Recipient:     aliceForeignAddr.MarshalPB(),
+		},
+	)
+	require.Error(err)
+
+	// LoomCoin 18-digit decimals amount
+	withdrawalAmount := sciNot(314, 18)
+	// Alice withdraw LoomCoin from dAppChain Gateway
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(aliceDappAddr)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *withdrawalAmount},
+			Recipient:     aliceForeignAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+
+	receipt, err := gwHelper.Contract.WithdrawalReceipt(
+		gwHelper.ContractCtx(fakeCtx.WithSender(aliceDappAddr)),
+		&WithdrawalReceiptRequest{
+			Owner: aliceDappAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+	require.Equal(big.NewInt(0).Div(withdrawalAmount.Int, big.NewInt(10000000000)).String(),
+		receipt.Receipt.TokenAmount.Value.Int.String(),
+		"Token amount in the receipt should be adjusted from LoomCoin to BEP2 decimals",
+	)
+
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: []*MainnetEvent{
+			&MainnetEvent{
+				EthBlock: 80,
+				Payload: &MainnetWithdrawalEvent{
+					Withdrawal: &MainnetTokenWithdrawn{
+						TokenKind:     TokenKind_BNBLoomToken,
+						TokenContract: loomcoin.contractAddr.MarshalPB(),
+						TokenOwner:    aliceForeignAddr.MarshalPB(),
+						TokenAmount:   &types.BigUInt{Value: *loom.NewBigUInt(withdrawalAmount.Int)},
+					},
+				},
+			},
+		},
+	})
+	require.NoError(err)
+
+	balanceAfter, err := loomcoin.balanceOf(aliceDappAddr)
+	require.NoError(err)
+	require.Equal(big.NewInt(0).String(),
+		balanceAfter.String(),
+		"Balance should be zero after withdrawal of full deposited amount")
+}
+
+func TestPrecisionAdjustment(t *testing.T) {
+	tests := []struct {
+		fromDecimals uint8
+		toDecimals   uint8
+		fromAmount   *big.Int
+		toAmount     *big.Int
+		expectErr    bool
+	}{
+		// integral
+		{8, 8, sciNot(1, 8).Int, sciNot(1, 8).Int, false},
+		{18, 18, sciNot(1, 18).Int, sciNot(1, 18).Int, false},
+		{18, 8, sciNot(1, 18).Int, sciNot(1, 8).Int, false},
+		{18, 10, sciNot(1, 18).Int, sciNot(1, 10).Int, false},
+		{8, 18, sciNot(1, 8).Int, sciNot(1, 18).Int, false},
+		{18, 8, sciNot(0, 18).Int, sciNot(0, 8).Int, false},
+		// fractional
+		{8, 8, sciNot(314, 6).Int, sciNot(314, 6).Int, false},
+		{18, 18, sciNot(314, 16).Int, sciNot(314, 16).Int, false},
+		{18, 8, sciNot(314, 16).Int, sciNot(314, 6).Int, false},
+		{18, 10, sciNot(314, 16).Int, sciNot(314, 8).Int, false},
+		{8, 18, sciNot(314, 6).Int, sciNot(314, 16).Int, false},
+		// expect error
+		{18, 8, sciNot(314, 6).Int, sciNot(0, 0).Int, true}, // 3.14x10^8
+		{18, 8, sciNot(1, 7).Int, sciNot(0, 0).Int, true},   // 0.1x10^8
+		{18, 8, sciNot(314, 8).Int, sciNot(3, 0).Int, true}, // 3.14x10^8 the fraction loss
+	}
+
+	for i, test := range tests {
+		toAmount, err := adjustTokenAmount(test.fromAmount, test.fromDecimals, test.toDecimals)
+		require.Equal(t, test.expectErr, err != nil)
+		require.Equal(t, 0, toAmount.Cmp(test.toAmount),
+			"test:%d fromDecimals %d, toDecimals %d, fromAmount %s, toAmount %s -- got %s",
+			i+1, test.fromDecimals, test.toDecimals, test.fromAmount, test.toAmount, toAmount)
+	}
 }

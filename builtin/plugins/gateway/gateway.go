@@ -166,6 +166,9 @@ const (
 	TxStatusProcessed = tgtypes.TransferGatewayTxStatus_PROCESSED
 	TxStatusConfirmed = tgtypes.TransferGatewayTxStatus_CONFIRMED
 	TxStatusRejected  = tgtypes.TransferGatewayTxStatus_REJECTED
+
+	BEP2Decimals     = 8
+	LoomCoinDecimals = 18
 )
 
 func localAccountKey(owner loom.Address) []byte {
@@ -1065,14 +1068,40 @@ func (gw *Gateway) WithdrawETH(ctx contract.Context, req *WithdrawETHRequest) er
 //       before it can make another withdrawal (even if the tokens/ETH/Loom originate from different
 //       ERC20 or ERC721 contracts).
 func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinRequest) error {
+	var adjustedAmount *big.Int // final amount that will be credited on the foreign chain
+
 	switch gw.Type {
 	case LoomCoinGateway:
 		if req.Amount == nil || req.TokenContract == nil {
 			return ErrInvalidRequest
 		}
+		adjustedAmount = req.Amount.Value.Int
+
 	case BinanceGateway:
 		if req.Amount == nil || req.Recipient == nil {
 			return ErrInvalidRequest
+		}
+		adjustedAmount = req.Amount.Value.Int
+
+		if ctx.FeatureEnabled(features.TGVersion1_3, false) {
+			var err error
+			adjustedAmount, err = adjustTokenAmount(req.Amount.Value.Int, LoomCoinDecimals, BEP2Decimals)
+			if err != nil {
+				return err
+			}
+			// TODO: this doesn't need to be logged after we've verified the adjustment works correctly
+			ctx.Logger().Info(
+				"adjustTokenAmount",
+				"kind", TokenKind_LoomCoin,
+				"tokenContract", req.TokenContract,
+				"fromAmount", req.Amount.String(),
+				"toAmount", adjustedAmount.String(),
+			)
+			// If the withdrawer is going to end up with a big fat zero on the foreign chain then
+			// there's no point wasting any more CPU cycles or fees.
+			if adjustedAmount.Sign() == 0 {
+				return ErrInvalidRequest
+			}
 		}
 	default:
 		return ErrInvalidRequest
@@ -1158,17 +1187,22 @@ func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinR
 		TokenOwner:      ownerMainnetAddr.MarshalPB(),
 		TokenContract:   req.TokenContract,
 		TokenKind:       TokenKind_LoomCoin,
-		TokenAmount:     req.Amount,
+		TokenAmount:     &types.BigUInt{Value: *loom.NewBigUInt(adjustedAmount)},
 		WithdrawalNonce: foreignAccount.WithdrawalNonce,
 	}
 
-	// Add owner adress for binance gateway in memo for tracking purposes
 	if gw.Type == BinanceGateway {
+		// Add owner adress for binance gateway in memo for tracking purposes
 		account.WithdrawalReceipt.TokenWithdrawer = ownerAddr.MarshalPB()
-		minimunAllowance := loom.NewBigUIntFromInt(10000000000)
-		if req.Amount.Value.Cmp(minimunAllowance) < 0 {
-			emitWithdrawLoomCoinError(ctx, errors.Errorf("Transfer amount must be at least %v", minimunAllowance).Error(), req)
-			return err
+
+		if !ctx.FeatureEnabled(features.TGVersion1_3, false) {
+			// This MUST be finally removed if precision adjustment is enabled because it won't get run.
+			minimunAllowance := loom.NewBigUIntFromInt(10000000000)
+			if req.Amount.Value.Cmp(minimunAllowance) < 0 {
+				emitWithdrawLoomCoinError(ctx, errors.Errorf("Transfer amount must be at least %v", minimunAllowance).Error(), req)
+				// NOTE: err is nil here, the fractional amount will be lost when nil is returned.
+				return err
+			}
 		}
 	}
 
@@ -1943,7 +1977,21 @@ func transferTokenDeposit(
 		if err := eth.transfer(ownerAddr, safeAmount); err != nil {
 			return errors.Wrap(err, "failed to transfer ETH")
 		}
+
 	case TokenKind_LoomCoin, TokenKind_BNBLoomToken:
+		if kind == TokenKind_BNBLoomToken && ctx.FeatureEnabled(features.TGVersion1_3, false) {
+			// Adjusting BEP2 8-decimals to LoomCoin 18-decimals should never fail
+			safeAmount, err = adjustTokenAmount(safeAmount, BEP2Decimals, LoomCoinDecimals)
+			if err != nil {
+				return err
+			}
+
+			// No point doing anything else if the deposit amount is zero
+			if safeAmount.Sign() == 0 {
+				return nil
+			}
+		}
+
 		coin := newCoinContext(ctx)
 		availableFunds, err := coin.balanceOf(ctx.ContractAddress())
 		if err != nil {
@@ -2874,4 +2922,27 @@ func updateForeignAccountDailyWithdrawal(
 	account.LastWithdrawalLimitResetTime = withdrawalLimitResetTime
 	account.TotalWithdrawalAmount = &types.BigUInt{Value: *loom.NewBigUInt(sum)}
 	return nil
+}
+
+// adjustTokenAmount converts the given amount from one precision to another. When converting from
+// a more precise to a less precise amount there may be a fractional part that can't be represented
+// with lower precision, in that case an error is returned.
+func adjustTokenAmount(amount *big.Int, fromDecimals, toDecimals uint8) (*big.Int, error) {
+	// If the amount is zero, or the number of decimals is the same then there's nothing to adjust.
+	if (fromDecimals == toDecimals) || (amount.Sign() == 0) {
+		return amount, nil
+	}
+
+	if fromDecimals > toDecimals {
+		div := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(fromDecimals-toDecimals)), nil)
+		q, m := new(big.Int).DivMod(amount, div, new(big.Int))
+		// Check if there's a fractional part that can't be represented with lower precision.
+		if m.Sign() > 0 {
+			return q, errors.Errorf("token amount must not contain fraction less than %v", div)
+		}
+		return q, nil
+	} else {
+		mul := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(toDecimals-fromDecimals)), nil)
+		return new(big.Int).Mul(amount, mul), nil
+	}
 }
