@@ -2443,7 +2443,6 @@ func (ts *GatewayTestSuite) TestTronGateway() {
 
 // Test Deposit and Withdraw LOOM token between plasma chain and binance chain
 func (ts *GatewayTestSuite) TestBinanceGateway() {
-	ts.T().Skip("Coin contract doesn't allow the Binance Gateway contract to mint LOOM yet")
 
 	require := ts.Require()
 	ownerAddr := ts.dAppAddr
@@ -2452,6 +2451,12 @@ func (ts *GatewayTestSuite) TestBinanceGateway() {
 	czBinanceDappAddr := ts.dAppAddr5
 
 	fakeCtx := plugin.CreateFakeContextWithEVM(oracleAddr, loom.RootAddress("chain"))
+	fakeCtx = fakeCtx.WithFeature(features.CoinVersion1_3Feature, true)
+	fakeCtx = fakeCtx.WithFeature(features.TGVersion1_3, true)
+	fakeCtx.FakeContext.SetFeature(features.TGVersion1_3, true)
+	fakeCtx.FakeContext.SetFeature(features.CoinVersion1_3Feature, true)
+	fakeCtx.FakeContext.SetFeature(features.TGVersion1_4, true)
+
 	addressMapper, err := deployAddressMapperContract(fakeCtx)
 	require.NoError(err)
 
@@ -2460,19 +2465,33 @@ func (ts *GatewayTestSuite) TestBinanceGateway() {
 
 	require.NoError(addressMapper.AddIdentityMapping(fakeCtx.WithSender(czBinanceDappAddr), czBinanceAddr, czBinanceDappAddr, sig))
 
+	transferFee := &types.BigUInt{Value: *loom.NewBigUIntFromInt(37500)}
+
 	gwHelper, err := deployGatewayContract(fakeCtx, &InitRequest{
 		Owner:   ownerAddr.MarshalPB(),
 		Oracles: []*types.Address{oracleAddr.MarshalPB()},
 	}, BinanceGateway)
 	require.NoError(err)
 
+	req := &UpdateBinanceTransferFeeRequest{
+		TransferFee: transferFee,
+	}
+	err = gwHelper.Contract.SetTransferFee(gwHelper.ContractCtx(fakeCtx.WithSender(ownerAddr)), req)
+	require.NoError(err)
+
+	// deploy erc20 coin for sampleBNBToken
+	dappTokenAddr2, err := deployTokenContract(fakeCtx, "SampleBNBToken", gwHelper.Address, ts.dAppAddr2)
+	require.NoError(err)
+	require.NoError(gwHelper.AddContractMapping(fakeCtx, binanceBNBAddr, dappTokenAddr2))
+
 	// deploy LOOM coin
-	loomAddr, err := deployLoomCoinContract(fakeCtx)
+	loomCoinContract, err := deployLoomCoinContract(fakeCtx)
+
 	require.NoError(err)
 	// depositing from binance we put Dapp
 	loomamountsByBlock := []int64{160, 239, 581}
 	loomdeposits := genLoomDepositsFromBinance(
-		loomAddr.Address,
+		loomCoinContract.Address,
 		czBinanceDappAddr,
 		[]uint64{71, 73, 75},
 		loomamountsByBlock,
@@ -2482,21 +2501,40 @@ func (ts *GatewayTestSuite) TestBinanceGateway() {
 	})
 	require.NoError(err)
 
+	// depositing BNB from binance
+	bep2BNBamountsByBlock := []int64{37500}
+	bep2BNBdeposits := genBEP2DepositsFromBinance(
+		binanceBNBAddr,
+		czBinanceDappAddr,
+		[]uint64{78},
+		bep2BNBamountsByBlock,
+	)
+
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: bep2BNBdeposits,
+	})
+	require.NoError(err)
+
 	loomcoin := newcoinStaticContext(gwHelper.ContractCtx(fakeCtx))
 	bal, err := loomcoin.balanceOf(czBinanceDappAddr)
 	require.NoError(err)
-	require.Equal(int64(980), bal.Int64())
-
-	resp, err := gwHelper.Contract.GetUnclaimedContractTokens(gwHelper.ContractCtx(fakeCtx), &GetUnclaimedContractTokensRequest{TokenAddress: loomAddr.Address.MarshalPB()})
+	require.Equal(int64(9800000000000), bal.Int64()) // we gain 10**10 from precision adjustment
+	resp, err := gwHelper.Contract.GetUnclaimedContractTokens(gwHelper.ContractCtx(fakeCtx), &GetUnclaimedContractTokensRequest{TokenAddress: loomCoinContract.Address.MarshalPB()})
 	require.NoError(err)
 	require.Equal(loom.NewBigUIntFromInt(0), &resp.UnclaimedAmount.Value)
 
+	erc20bnb := newERC20Context(contract.WrapPluginContext(fakeCtx.WithAddress(czBinanceDappAddr)), dappTokenAddr2)
+	balbnb, err := erc20bnb.balanceOf(czBinanceDappAddr)
+	require.NoError(err)
+	require.Equal(int64(37500), balbnb.Int64()) // we gain no decimals as this erc20 bnb token contract has 8 decimals
+
+	require.NoError(erc20bnb.approve(gwHelper.Address, big.NewInt(37500)))
 	// cz withdraw LOOM coin from dAppChain Gateway
 	err = gwHelper.Contract.WithdrawLoomCoin(
 		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
 		&WithdrawLoomCoinRequest{
 			TokenContract: loomcoin.contractAddr.MarshalPB(),
-			Amount:        &types.BigUInt{Value: *loom.NewBigUIntFromInt(100)},
+			Amount:        &types.BigUInt{Value: *loom.NewBigUIntFromInt(1000000000000)},
 			Recipient:     czBinanceAddr.MarshalPB(),
 		},
 	)
@@ -2508,10 +2546,10 @@ func (ts *GatewayTestSuite) TestBinanceGateway() {
 				EthBlock: 80,
 				Payload: &MainnetWithdrawalEvent{
 					Withdrawal: &MainnetTokenWithdrawn{
-						TokenKind:     TokenKind_LoomCoin,
+						TokenKind:     TokenKind_BNBLoomToken,
 						TokenContract: loomcoin.contractAddr.MarshalPB(),
 						TokenOwner:    czBinanceAddr.MarshalPB(),
-						TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(100)},
+						TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(1000000000000)},
 					},
 				},
 			},
@@ -2521,7 +2559,7 @@ func (ts *GatewayTestSuite) TestBinanceGateway() {
 
 	balanceAfter, err := loomcoin.balanceOf(czBinanceDappAddr)
 	require.NoError(err)
-	require.Equal(int64(880), balanceAfter.Int64())
+	require.Equal(int64(8800000000000), balanceAfter.Int64())
 }
 
 func (ts *GatewayTestSuite) TestBinanceBEP2Gateway() {
@@ -3714,6 +3752,7 @@ func (ts *GatewayTestSuite) TestBinanceGatewayLoomCoinBEP2PrecisionAdjustment() 
 	//       Coin contract somehow ends up with a reference to the FakeContext instead of the FakeContextWithEVM.
 	fakeCtx.FakeContext.SetFeature(features.TGVersion1_3, true)
 	fakeCtx.FakeContext.SetFeature(features.CoinVersion1_3Feature, true)
+	fakeCtx.FakeContext.SetFeature(features.TGVersion1_4, true)
 
 	addressMapper, err := deployAddressMapperContract(fakeCtx)
 	require.NoError(err)
@@ -3742,6 +3781,12 @@ func (ts *GatewayTestSuite) TestBinanceGatewayLoomCoinBEP2PrecisionAdjustment() 
 	}
 	loomcoinContract, err := deployLoomCoinContract(fakeCtx, acct1)
 	require.NoError(err)
+
+	// deploy erc20 coin for sampleBNBToken
+	dappTokenAddr2, err := deployTokenContract(fakeCtx, "SampleBNBToken", gwHelper.Address, ts.dAppAddr2)
+	require.NoError(err)
+	require.NoError(gwHelper.AddContractMapping(fakeCtx, binanceBNBAddr, dappTokenAddr2))
+
 	loomcoin := newCoinContext(contract.WrapPluginContext(fakeCtx.WithAddress(loomcoinOwnerAddr)))
 	// Transfer some Loom amount from coin creator to Gateway to make sure
 	// Gateway has enough money for withdrawals without minting tokens
@@ -3790,6 +3835,27 @@ func (ts *GatewayTestSuite) TestBinanceGatewayLoomCoinBEP2PrecisionAdjustment() 
 	)
 	require.NoError(err)
 	require.Equal(loom.NewBigUIntFromInt(0), &resp.UnclaimedAmount.Value)
+
+	// depositing BNB from binance
+	bep2BNBamountsByBlock := []int64{37500}
+	bep2BNBdeposits := genBEP2DepositsFromBinance(
+		binanceBNBAddr,
+		aliceDappAddr,
+		[]uint64{78},
+		bep2BNBamountsByBlock,
+	)
+
+	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
+		Events: bep2BNBdeposits,
+	})
+	require.NoError(err)
+
+	erc20bnb := newERC20Context(contract.WrapPluginContext(fakeCtx.WithAddress(aliceDappAddr)), dappTokenAddr2)
+	balbnb, err := erc20bnb.balanceOf(aliceDappAddr)
+	require.NoError(err)
+	require.Equal(int64(37500), balbnb.Int64()) // we gain no decimals as this erc20 bnb token contract has 8 decimals
+
+	require.NoError(erc20bnb.approve(gwHelper.Address, big.NewInt(37500)))
 
 	invalidWithdrawalAmount := sciNot(314, 8) // 3.14x10^10
 	err = gwHelper.Contract.WithdrawLoomCoin(

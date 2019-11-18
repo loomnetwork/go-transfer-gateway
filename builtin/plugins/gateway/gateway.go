@@ -1062,11 +1062,13 @@ func (gw *Gateway) WithdrawETH(ctx contract.Context, req *WithdrawETHRequest) er
 }
 
 // WithdrawLoomCoin will attempt to transfer Loomcoin to the Gateway contract,
-// if it's successful it will store a receipt than can be used by the depositor to reclaim ownership
+// if it's successful it will store a receipt that can be used by the depositor to reclaim ownership
 // of the Loomcoin through the Mainnet Gateway contract.
 // NOTE: Currently an entity must complete each withdrawal by reclaiming ownership on Mainnet
 //       before it can make another withdrawal (even if the tokens/ETH/Loom originate from different
 //       ERC20 or ERC721 contracts).
+// NOTE: Caller will be charged a fee in BNB for Withdrawing LOOM to Binance Chain, so they must
+//       approve the BNB fee transfer before calling this method.
 func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinRequest) error {
 	var adjustedAmount *big.Int // final amount that will be credited on the foreign chain
 
@@ -1160,6 +1162,7 @@ func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinR
 		return err
 	}
 
+	// Check withdrawal limits aren't exceeded
 	if ctx.FeatureEnabled(features.TGWithdrawalLimitFeature, false) {
 		now := ctx.Now()
 		amount := req.Amount.Value.Int
@@ -1172,6 +1175,33 @@ func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinR
 		}
 		if err := updateForeignAccountDailyWithdrawal(ctx, now, state, foreignAccount, amount); err != nil {
 			return err
+		}
+	}
+
+	// Deduct withdrawal fee
+	if (gw.Type == BinanceGateway) && ctx.FeatureEnabled(features.TGVersion1_4, false) {
+		fee := big.NewInt(0)
+		if state.TransferFee != nil {
+			fee = state.TransferFee.Value.Int
+		}
+
+		bnbLocalAddr, err := resolveToLocalContractAddr(ctx, BNBTokenAddr)
+		if err != nil {
+			return errors.Wrap(err, "failed to resolve local BNB contract address")
+		}
+
+		erc20bnb := newERC20Context(ctx, bnbLocalAddr)
+		ownerBNBBalance, err := erc20bnb.balanceOf(ownerAddr)
+		if err != nil {
+			return errors.Wrap(err, "failed to retrieve BNB balance")
+		}
+
+		if ownerBNBBalance.Cmp(fee) < 0 {
+			return errors.New("insufficient BNB balance for transfer fee")
+		}
+
+		if err := erc20bnb.transferFrom(ownerAddr, ctx.ContractAddress(), fee); err != nil {
+			return errors.Wrap(err, "failed to transfer fee")
 		}
 	}
 
