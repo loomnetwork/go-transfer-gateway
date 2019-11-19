@@ -18,6 +18,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	loom "github.com/loomnetwork/go-loom"
 	"github.com/loomnetwork/go-loom/auth"
 	tgtypes "github.com/loomnetwork/go-loom/builtin/types/transfer_gateway"
@@ -107,6 +108,7 @@ type mainnetEventInfo struct {
 type Status struct {
 	Version                  string
 	OracleAddress            string
+	OracleForeignAddress     string
 	DAppChainGatewayAddress  string
 	MainnetGatewayAddress    string
 	NextMainnetBlockNum      uint64    `json:",string"`
@@ -213,10 +215,18 @@ func createOracle(cfg *TransferGatewayConfig, chainID string,
 
 	// only load the mainnet private key if receipt signing is needed
 	var mainnetPrivateKey lcrypto.PrivateKey
+	var oracleForeignAddrStr string
 	if receiptSigningEnabled {
 		mainnetPrivateKey, err = LoadMainnetPrivateKey(cfg.MainnetPrivateKeyHsmEnabled, cfg.MainnetPrivateKeyPath)
 		if err != nil {
 			return nil, err
+		}
+		// TODO: fix this shit
+		switch pk := mainnetPrivateKey.(type) {
+		case *lcrypto.Secp256k1PrivateKey:
+			oracleForeignAddrStr = crypto.PubkeyToAddress(pk.ToECDSAPrivKey().PublicKey).Hex()
+		case *lcrypto.YubiHsmPrivateKey:
+			oracleForeignAddrStr = pk.GetPubKeyAddr()
 		}
 	}
 
@@ -291,6 +301,7 @@ func createOracle(cfg *TransferGatewayConfig, chainID string,
 		status: Status{
 			Version:                 loomchain.FullVersion(),
 			OracleAddress:           address.String(),
+			OracleForeignAddress:    oracleForeignAddrStr,
 			MainnetGatewayAddress:   cfg.MainnetContractHexAddress,
 			MainnetHotWalletAddress: cfg.MainnetHotWalletAddress,
 		},
