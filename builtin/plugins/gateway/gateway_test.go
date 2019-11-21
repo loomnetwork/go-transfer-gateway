@@ -2540,6 +2540,16 @@ func (ts *GatewayTestSuite) TestBinanceGateway() {
 	)
 	require.NoError(err)
 
+	receipt, err := gwHelper.Contract.WithdrawalReceipt(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
+		&WithdrawalReceiptRequest{
+			Owner: czBinanceDappAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+	// When TGVersion1_5 feature flag is disabled TokenWithdrawer should be written to the receipt
+	require.NotNil(receipt.Receipt.TokenWithdrawer)
+
 	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
 		Events: []*MainnetEvent{
 			&MainnetEvent{
@@ -2560,6 +2570,26 @@ func (ts *GatewayTestSuite) TestBinanceGateway() {
 	balanceAfter, err := loomcoin.balanceOf(czBinanceDappAddr)
 	require.NoError(err)
 	require.Equal(int64(8800000000000), balanceAfter.Int64())
+
+	err = gwHelper.Contract.WithdrawLoomCoin(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr).WithFeature(features.TGVersion1_5, true)),
+		&WithdrawLoomCoinRequest{
+			TokenContract: loomcoin.contractAddr.MarshalPB(),
+			Amount:        &types.BigUInt{Value: *loom.NewBigUIntFromInt(1000000000000)},
+			Recipient:     czBinanceAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+
+	receipt, err = gwHelper.Contract.WithdrawalReceipt(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
+		&WithdrawalReceiptRequest{
+			Owner: czBinanceDappAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+	// When TGVersion1_5 feature flag is enabled TokenWithdrawer shouldn't be written to the receipt
+	require.Nil(receipt.Receipt.TokenWithdrawer)
 }
 
 func (ts *GatewayTestSuite) TestBinanceBEP2Gateway() {
@@ -2742,6 +2772,16 @@ func (ts *GatewayTestSuite) TestBinanceBNBTokenBEP2Gateway() {
 	)
 	require.NoError(err)
 
+	receipt, err := gwHelper.Contract.WithdrawalReceipt(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
+		&WithdrawalReceiptRequest{
+			Owner: czBinanceDappAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+	// When TGVersion1_5 feature flag is disabled TokenWithdrawer should be written to the receipt
+	require.NotNil(receipt.Receipt.TokenWithdrawer)
+
 	// Oracle calls gateway to process the event
 	err = gwHelper.Contract.ProcessEventBatch(gwHelper.ContractCtx(fakeCtx), &ProcessEventBatchRequest{
 		Events: []*MainnetEvent{
@@ -2803,6 +2843,26 @@ func (ts *GatewayTestSuite) TestBinanceBNBTokenBEP2Gateway() {
 	require.NoError(err)
 	require.Equal(int64(90000000), balanceAfter.Int64())
 
+	err = gwHelper.Contract.WithdrawToken(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr).WithFeature(features.TGVersion1_5, true)),
+		&WithdrawTokenRequest{
+			TokenKind:     TokenKind_BEP2,
+			TokenContract: dappTokenAddr.MarshalPB(),
+			TokenAmount:   &types.BigUInt{Value: *loom.NewBigUIntFromInt(9962500)},
+			Recipient:     czBinanceAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+
+	receipt, err = gwHelper.Contract.WithdrawalReceipt(
+		gwHelper.ContractCtx(fakeCtx.WithSender(czBinanceDappAddr)),
+		&WithdrawalReceiptRequest{
+			Owner: czBinanceDappAddr.MarshalPB(),
+		},
+	)
+	require.NoError(err)
+	// When TGVersion1_5 feature flag is disabled TokenWithdrawer should be written to the receipt
+	require.Nil(receipt.Receipt.TokenWithdrawer)
 }
 
 func (ts *GatewayTestSuite) TestGatewayHotWalletDepositWithdrawal() {

@@ -842,7 +842,9 @@ func (gw *Gateway) WithdrawToken(ctx contract.Context, req *WithdrawTokenRequest
 		WithdrawalNonce: foreignAccount.WithdrawalNonce,
 	}
 
-	if gw.Type == BinanceGateway {
+	if (gw.Type == BinanceGateway) && !ctx.FeatureEnabled(features.TGVersion1_5, false) {
+		// NOTE: The token withdrawer is actually meant to contain the DAppChain address, whereas
+		//       here it's set to the Binance address.
 		account.WithdrawalReceipt.TokenWithdrawer = req.Recipient
 	}
 
@@ -1222,8 +1224,9 @@ func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinR
 	}
 
 	if gw.Type == BinanceGateway {
-		// Add owner adress for binance gateway in memo for tracking purposes
-		account.WithdrawalReceipt.TokenWithdrawer = ownerAddr.MarshalPB()
+		if !ctx.FeatureEnabled(features.TGVersion1_5, false) {
+			account.WithdrawalReceipt.TokenWithdrawer = ownerAddr.MarshalPB()
+		}
 
 		if !ctx.FeatureEnabled(features.TGVersion1_3, false) {
 			// This MUST be finally removed if precision adjustment is enabled because it won't get run.
@@ -2567,6 +2570,10 @@ func (gw *Gateway) UpdateWithdrawalReceipt(ctx contract.Context, req *ConfirmWit
 		return err
 	}
 
+	if (foreignAccount.CurrentWithdrawer == nil) && ctx.FeatureEnabled(features.TGVersion1_5, false) {
+		return fmt.Errorf("no pending withdrawal to %v found", ownerAddr)
+	}
+
 	addr := loom.UnmarshalAddressPB(foreignAccount.CurrentWithdrawer)
 	localAccount, err := loadLocalAccount(ctx, addr)
 	if err != nil {
@@ -2600,7 +2607,7 @@ func (gw *Gateway) UpdateWithdrawalReceipt(ctx contract.Context, req *ConfirmWit
 	payload, err := proto.Marshal(&PendingWithdrawalSummary{
 		TokenOwner:      wr.TokenOwner,
 		TokenAmount:     wr.TokenAmount,
-		TokenWithdrawer: wr.TokenWithdrawer,
+		TokenWithdrawer: req.TokenOwner,
 		TxHash:          wr.TxHash,
 		TxStatus:        wr.TxStatus,
 	})
@@ -2638,7 +2645,7 @@ func filterWithdrawalsByTxStatus(ctx contract.StaticContext, status TxStatus) ([
 		summaries = append(summaries, &PendingWithdrawalSummary{
 			TokenOwner:      receipt.TokenOwner,
 			TokenAmount:     receipt.TokenAmount,
-			TokenWithdrawer: receipt.TokenWithdrawer,
+			TokenWithdrawer: ownerAddrPB,
 			TxHash:          receipt.TxHash,
 			TokenContract:   receipt.TokenContract,
 		})
@@ -2666,11 +2673,10 @@ func (gw *Gateway) ResubmitWithdrawal(ctx contract.Context, req *ResubmitWithdra
 		return ErrNoPendingWithdrawalExists
 	}
 
-	withdrawStatus := account.WithdrawalReceipt.TxStatus
-	if withdrawStatus != TxStatusRejected {
+	if account.WithdrawalReceipt.TxStatus != TxStatusRejected {
 		return ErrNoPendingWithdrawalExists
 	}
-	// change withdrawalReceiptStatus to Pending
+	// Change tx status back from rejected back to pending so the Oracle retries the withdrawal
 	account.WithdrawalReceipt.TxStatus = TxStatusPending
 
 	if err := saveLocalAccount(ctx, account); err != nil {
@@ -2682,7 +2688,7 @@ func (gw *Gateway) ResubmitWithdrawal(ctx contract.Context, req *ResubmitWithdra
 	payload, err := proto.Marshal(&PendingWithdrawalSummary{
 		TokenOwner:      wr.TokenOwner,
 		TokenAmount:     wr.TokenAmount,
-		TokenWithdrawer: wr.TokenWithdrawer,
+		TokenWithdrawer: ownerAddr.MarshalPB(),
 		TxHash:          wr.TxHash,
 		TxStatus:        wr.TxStatus,
 	})
