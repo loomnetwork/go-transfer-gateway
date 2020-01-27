@@ -1140,7 +1140,11 @@ func (gw *Gateway) WithdrawLoomCoin(ctx contract.Context, req *WithdrawLoomCoinR
 		}
 	}
 
-	if ctx.FeatureEnabled(features.TGVersion1_2, false) {
+	if gw.Type == BinanceGateway && ctx.FeatureEnabled(features.TGVersion1_6, false) {
+		if ownerMainnetAddr.ChainID != "binance" {
+			return ErrInvalidRequest
+		}
+	} else if ctx.FeatureEnabled(features.TGVersion1_2, false) {
 		if ownerMainnetAddr.ChainID != req.TokenContract.ChainId {
 			return ErrInvalidRequest
 		}
