@@ -94,6 +94,16 @@ $(TENDERMINT_DIR):
 	git clone -q https://github.com/loomnetwork/tendermint.git $@
 
 deps: $(PLUGIN_DIR) $(LOOMCHAIN_DIR) $(GO_ETHEREUM_DIR) $(SSHA3_DIR) $(IAVL_DIR) $(TENDERMINT_DIR)
+	# Lock down Prometheus golang client to v1.2.1 (newer versions use a different protobuf version)
+	git clone -q https://github.com/prometheus/client_golang $(GOPATH)/src/github.com/prometheus/client_golang
+	cd $(GOPATH)/src/github.com/prometheus/client_golang && git checkout master && git pull && git checkout v1.2.1
+	# prometheus/client_model is pulled by prometheus/client_golang so lock it down as well
+	git clone -q https://github.com/prometheus/client_model $(GOPATH)/src/github.com/prometheus/client_model
+	cd $(GOPATH)/src/github.com/prometheus/client_model && git checkout master && git pull && git checkout 14fe0d1b01d4d5fc031dd4bec1823bd3ebbe8016
+	# prometheus/common is pulled by prometheus/client_golang so lock it down as well
+	git clone -q https://github.com/prometheus/common $(GOPATH)/src/github.com/prometheus/common
+	cd $(GOPATH)/src/github.com/prometheus/common && git checkout master && git pull && git checkout v0.7.0
+
 	go get \
 		golang.org/x/crypto/ed25519 \
 		google.golang.org/grpc \
