@@ -1382,9 +1382,12 @@ func (orc *Oracle) fetchTokenWithdrawals(filterOpts *bind.FilterOpts) ([]*mainne
 		if ok {
 			ev := it.Event
 
-			// Not strictly required, but will provide additional protection to oracle in case
-			// we get any erc20 events from loomcoin gateway
+			// Ignore any unexpected withdraw events. Unfortunately the Ethereum Gateway contracts aren't as
+			// strict about rejecting invalid deposit and withdrawal attempts as they should be, so the Oracle
+			// has to detect those junk events here.
 			if (orc.gatewayType == gwcontract.LoomCoinGateway) && (TokenKind(ev.Kind) != TokenKind_LoomCoin) {
+				continue
+			} else if (orc.gatewayType == gwcontract.EthereumGateway) && (TokenKind(ev.Kind) == TokenKind_LoomCoin) {
 				continue
 			}
 
