@@ -1,12 +1,12 @@
 # transfer-gateway
 
-Transfer Gateway Go contracts and Oracles that are built into `loomchain` PlasmaChain builds.
+Transfer Gateway Go contracts and Oracles for `loomchain`.
 
 ## Building
 
 The only thing in this repo you can build are the unit tests, the Oracles themselves should be
-built via the `loomchain` Makefile, just ensure this repo is checked out to the same `GOPATH` as
-`loomchain`.
+built via the `loomchain` Makefile. Checkout this repo under the same `GOPATH` as `loomchain`,
+into the `$GOPATH/src/github.com/loomnetwork/transfer-gateway` directory.
 
 To run the tests in this repo you'll need to install the dependencies, there are two options.
 
